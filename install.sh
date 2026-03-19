@@ -146,17 +146,24 @@ DASHBOARD_PASSWORD_HASH=""
 echo ""
 echo "───────────────────────────────────────────────────────"
 echo -e "  ${BOLD}Bind-Adresse${NC}"
-echo -e "  ${CYAN}127.0.0.1${NC} = nur localhost (empfohlen – SSH-Tunnel oder Reverse Proxy)"
-echo -e "  ${CYAN}0.0.0.0${NC}   = alle Interfaces (nur wenn Reverse Proxy mit HTTPS vorgeschaltet)"
+echo -e "  ${CYAN}127.0.0.1${NC} = nur localhost (SSH-Tunnel oder Reverse Proxy)"
+echo -e "  ${CYAN}0.0.0.0${NC}   = alle Interfaces (nur hinter HTTPS-Proxy)"
+echo -e "  ${CYAN}Eigene IP${NC} = z.B. 192.168.0.24 (empfohlen im LAN)"
 echo ""
-echo -ne "  ${BOLD}[1=127.0.0.1 (default/sicher) / 2=0.0.0.0]:${NC} "
+echo -ne "  ${BOLD}[1=127.0.0.1 / 2=0.0.0.0 / IP eingeben]:${NC} "
 read -r BIND_CHOICE </dev/tty
-if [[ "$BIND_CHOICE" == "2" ]]; then
-    LISTEN_HOST="0.0.0.0"
-    warn "Dashboard auf ALLEN Interfaces – stelle sicher dass HTTPS + Firewall konfiguriert sind!"
-else
+if [[ "$BIND_CHOICE" == "1" ]]; then
     LISTEN_HOST="127.0.0.1"
     info "Dashboard bindet nur auf localhost ✓"
+elif [[ "$BIND_CHOICE" == "2" ]]; then
+    LISTEN_HOST="0.0.0.0"
+    warn "Dashboard auf ALLEN Interfaces – stelle sicher dass HTTPS + Firewall konfiguriert sind!"
+elif [[ "$BIND_CHOICE" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    LISTEN_HOST="$BIND_CHOICE"
+    ok "Dashboard bindet auf ${LISTEN_HOST} ✓"
+else
+    LISTEN_HOST="127.0.0.1"
+    warn "Ungültige Eingabe – fallback auf 127.0.0.1"
 fi
 
 echo ""
