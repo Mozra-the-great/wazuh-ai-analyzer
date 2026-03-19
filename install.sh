@@ -140,12 +140,8 @@ while true; do
     fi
     break
 done
-
-# Passwort hashen (Werkzeug pbkdf2:sha256 – kein Klartext in der env-Datei)
-info "Passwort-Hash generieren …"
-DASHBOARD_PASSWORD_HASH=$(python3 -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('${PASS1//\'/\'\\\'\'}'))" 2>/dev/null)
-[[ -n "$DASHBOARD_PASSWORD_HASH" ]] || error "Hash-Generierung fehlgeschlagen – ist Werkzeug installiert?"
-ok "Passwort-Hash erstellt (Klartext wird nicht gespeichert)"
+# Passwort-Hash wird nach der venv-Installation generiert (Werkzeug muss verfügbar sein)
+DASHBOARD_PASSWORD_HASH=""
 
 echo ""
 echo "───────────────────────────────────────────────────────"
@@ -189,8 +185,26 @@ ok "Verzeichnisse: ${INSTALL_DIR}"
 info "Python venv einrichten …"
 python3 -m venv "${INSTALL_DIR}/venv" --upgrade-deps --quiet
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv/bin/pip" install --quiet flask requests
-ok "Python-Pakete: flask, requests"
+"${INSTALL_DIR}/venv/bin/pip" install --quiet flask requests werkzeug
+ok "Python-Pakete: flask, requests, werkzeug"
+
+# Passwort hashen – jetzt wo Werkzeug im venv verfügbar ist
+info "Passwort-Hash generieren …"
+# Passwort über temporäre Datei übergeben um Shell-Escaping-Probleme zu vermeiden
+_PASS_TMP=$(mktemp)
+printf '%s' "${PASS1}" > "$_PASS_TMP"
+DASHBOARD_PASSWORD_HASH=$(
+    "${INSTALL_DIR}/venv/bin/python3" - <<PYEOF
+import sys
+from werkzeug.security import generate_password_hash
+pw = open("${_PASS_TMP}").read()
+print(generate_password_hash(pw))
+PYEOF
+)
+rm -f "$_PASS_TMP"
+unset PASS1 PASS2  # Klartext sofort aus dem Speicher entfernen
+[[ -n "$DASHBOARD_PASSWORD_HASH" ]] || error "Hash-Generierung fehlgeschlagen"
+ok "Passwort-Hash erstellt (Klartext entfernt)"
 
 # =============================================================================
 # Schritt 6: Dateien herunterladen
