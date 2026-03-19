@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Security Dashboard</title>
+  <style>
+    :root {
+      --bg:       #080c14;
+      --surface:  #0f1623;
+      --surface2: #161e2e;
+      --border:   rgba(255,255,255,0.07);
+      --text:     #e2e8f0;
+      --muted:    rgba(255,255,255,0.38);
+      --accent:   #6366f1;
+
+      --c-critical: #ef4444;
+      --c-high:     #f97316;
+      --c-medium:   #eab308;
+      --c-low:      #3b82f6;
+      --c-info:     #64748b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+    #app { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 24px; height: 56px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; }
+    .logo-text { font-size: 15px; font-weight: 600; }
+    .logo-sub  { font-size: 10px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-top: 1px; }
+    #status-bar { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+    .dot.ok   { background: #22c55e; animation: pulse 2s infinite; }
+    .dot.warn { background: #eab308; }
+    .dot.err  { background: #ef4444; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .btn {
+      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--muted); font-size: 12px; cursor: pointer;
+      transition: all .15s; display: flex; align-items: center; gap: 5px;
+    }
+    .btn:hover { background: var(--surface2); color: var(--text); border-color: rgba(255,255,255,.18); }
+    #refresh-btn svg { transition: transform .5s; }
+    #refresh-btn.spinning svg { transform: rotate(360deg); }
+
+    main { flex: 1; max-width: 1300px; margin: 0 auto; padding: 24px; width: 100%; }
+
+    /* ── QUOTA BANNER ── */
+    #quota-banner {
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.35);
+      border-left: 4px solid #ef4444;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      display: none;
+      animation: slideIn .3s ease;
+    }
+    #quota-banner .qb-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    #quota-banner .qb-icon   { font-size: 20px; }
+    #quota-banner .qb-title  { font-size: 15px; font-weight: 600; color: #ef4444; }
+    #quota-banner .qb-badge  { margin-left: auto; background: rgba(239,68,68,.15); color: #ef4444; border: 1px solid rgba(239,68,68,.3); padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+    #quota-banner .qb-body   { font-size: 13px; color: rgba(255,255,255,.7); line-height: 1.65; }
+    #quota-banner .qb-meta   { font-size: 11px; color: var(--muted); margin-top: 8px; display: flex; gap: 16px; flex-wrap: wrap; }
+    #quota-countdown         { font-weight: 600; color: #f97316; }
+    #quota-progress-wrap     { margin-top: 10px; background: rgba(255,255,255,.05); border-radius: 4px; height: 4px; overflow: hidden; }
+    #quota-progress-bar      { height: 100%; background: #ef4444; transition: width .5s; }
+
+    /* ── History Banner ── */
+    #history-banner {
+      background: rgba(99,102,241,.07);
+      border: 1px solid rgba(99,102,241,.25);
+      border-left: 4px solid var(--accent);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 20px;
+      display: none;
+      animation: slideIn .3s ease;
+    }
+    #history-banner .hb-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    #history-banner .hb-title  { font-size: 14px; font-weight: 600; color: #a5b4fc; }
+    #history-banner .hb-body   { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    #hist-progress-wrap { margin-top: 10px; background: rgba(255,255,255,.06); border-radius: 4px; height: 3px; overflow: hidden; }
+    #hist-progress-bar  { height: 100%; background: var(--accent); transition: width .5s; }
+
+    /* ── Summary ── */
+    #summary-banner {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px 18px; margin-bottom: 20px; font-size: 13px; line-height: 1.65;
+      color: rgba(255,255,255,.75); display: none;
+    }
+    #summary-banner .sb-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); font-weight: 600; display: block; margin-bottom: 5px; }
+
+    /* ── Stat Cards ── */
+    .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 24px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; cursor: pointer;
+      transition: border-color .2s, background .2s; position: relative; overflow: hidden;
+    }
+    .stat-card:hover, .stat-card.active { background: var(--surface2); border-color: rgba(255,255,255,.18); }
+    .stat-card.active::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2px; background: var(--sev-color, var(--accent)); }
+    .stat-card.active { border-color: var(--sev-color, var(--accent)); }
+    .stat-num   { font-size: 26px; font-weight: 700; line-height: 1; color: var(--sev-color, var(--text)); }
+    .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+    .stat-card[data-sev="critical"] { --sev-color: var(--c-critical); }
+    .stat-card[data-sev="high"]     { --sev-color: var(--c-high); }
+    .stat-card[data-sev="medium"]   { --sev-color: var(--c-medium); }
+    .stat-card[data-sev="low"]      { --sev-color: var(--c-low); }
+    .stat-card[data-sev="info"]     { --sev-color: var(--c-info); }
+
+    /* ── Toolbar ── */
+    .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .section-title { font-size: 15px; font-weight: 600; flex: 1; }
+    .source-tabs { display: flex; gap: 4px; }
+    .tab { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 500; cursor: pointer; border: 1px solid var(--border); color: var(--muted); transition: all .15s; }
+    .tab.active { background: var(--accent); border-color: var(--accent); color: white; }
+    .tab:hover:not(.active) { border-color: rgba(255,255,255,.2); color: var(--text); }
+
+    /* ── Finding Cards ── */
+    #findings-list { display: flex; flex-direction: column; gap: 7px; }
+    .finding-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--sev-color, var(--border));
+      border-radius: 10px; padding: 13px 16px; cursor: pointer;
+      transition: background .15s;
+      display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+    }
+    .finding-card:hover { background: var(--surface2); }
+    .finding-card[data-sev="critical"] { --sev-color: var(--c-critical); }
+    .finding-card[data-sev="high"]     { --sev-color: var(--c-high); }
+    .finding-card[data-sev="medium"]   { --sev-color: var(--c-medium); }
+    .finding-card[data-sev="low"]      { --sev-color: var(--c-low); }
+    .finding-card[data-sev="info"]     { --sev-color: var(--c-info); }
+
+    .sev-badge {
+      padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .8px; white-space: nowrap;
+      background: rgba(var(--rgb,100,116,139),.15); color: var(--sev-color, #64748b);
+      border: 1px solid rgba(var(--rgb,100,116,139),.25);
+    }
+    .sev-badge[data-sev="critical"] { --rgb: 239,68,68; }
+    .sev-badge[data-sev="high"]     { --rgb: 249,115,22; }
+    .sev-badge[data-sev="medium"]   { --rgb: 234,179,8; }
+    .sev-badge[data-sev="low"]      { --rgb: 59,130,246; }
+    .sev-badge[data-sev="info"]     { --rgb: 100,116,139; }
+
+    .fc-body  { overflow: hidden; }
+    .fc-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fc-meta  { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .fc-meta span::before { content: '· '; }
+    .fc-meta span:first-child::before { content: ''; }
+    .src-pip { font-size: 9px; padding: 1px 6px; border-radius: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; }
+    .src-pip.history { background: rgba(99,102,241,.15); color: #a5b4fc; }
+    .src-pip.live    { background: rgba(34,197,94,.15);  color: #4ade80; }
+    .fc-arrow { color: var(--muted); font-size: 18px; transition: transform .2s; }
+    .finding-card.expanded .fc-arrow { transform: rotate(90deg); }
+
+    /* ── Detail Panel ── */
+    .detail-panel {
+      background: var(--surface2); border: 1px solid rgba(255,255,255,.09);
+      border-radius: 10px; padding: 20px 22px; margin: 2px 0 6px;
+      animation: slideIn .2s ease;
+    }
+    @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+    .detail-panel h3 { font-size: 15px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ds { margin-bottom: 16px; }
+    .ds label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); font-weight: 600; display: block; margin-bottom: 6px; }
+    .ds p { line-height: 1.65; color: rgba(255,255,255,.82); font-size: 13.5px; }
+    .rec-block {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 13px 15px; font-size: 13px; line-height: 1.8;
+      white-space: pre-wrap; color: rgba(255,255,255,.75);
+    }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { padding: 3px 10px; border-radius: 6px; font-size: 11px; font-family: monospace; background: rgba(255,255,255,.07); border: 1px solid var(--border); color: var(--muted); }
+
+    /* ── Empty / Skeleton ── */
+    .empty-state { text-align: center; padding: 60px 24px; color: var(--muted); }
+    .empty-state .icon { font-size: 36px; margin-bottom: 12px; opacity: .4; }
+    .empty-state h3 { font-size: 15px; font-weight: 500; margin-bottom: 6px; }
+    .empty-state p  { font-size: 13px; max-width: 380px; margin: 0 auto; }
+    .skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 8px; height: 58px; }
+    @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+    /* ── Pagination ── */
+    #pagination { display: flex; justify-content: center; gap: 8px; margin-top: 18px; }
+
+    /* ── Toast ── */
+    #toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; font-size: 13px; opacity: 0; transform: translateY(10px); transition: all .3s; pointer-events: none; z-index: 999; }
+    #toast.show { opacity: 1; transform: translateY(0); }
+
+    ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">
+      <span style="font-size:20px">🛡️</span>
+      <div>
+        <div class="logo-text">Wazuh AI Analyzer</div>
+        <div class="logo-sub">powered by Aeterna™ · Gemini AI</div>
+      </div>
+    </div>
+    <div id="status-bar">
+      <span><span class="dot warn" id="gemini-dot"></span><span id="gemini-label">Gemini</span></span>
+      <span title="Alerts im Puffer">⏳ <span id="buf-count">0</span> gepuffert</span>
+      <span id="retry-queue-label" style="display:none;color:#f97316">🔁 <span id="rq-count">0</span> warten</span>
+      <span id="last-label" style="color:var(--muted)">–</span>
+      <button class="btn" id="refresh-btn" onclick="refresh()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        Reload
+      </button>
+      <a href="/logout" class="btn" style="text-decoration:none;color:inherit" title="Abmelden">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Abmelden
+      </a>
+    </div>
+  </header>
+
+  <main>
+    <!-- Quota exhaustion banner -->
+    <div id="quota-banner">
+      <div class="qb-header">
+        <span class="qb-icon">⚠️</span>
+        <span class="qb-title">Gemini API Quota erschöpft – Analyse pausiert</span>
+        <span class="qb-badge">PAUSIERT</span>
+      </div>
+      <div class="qb-body" id="quota-body">
+        Das kostenlose Gemini-Kontingent ist vorübergehend aufgebraucht.
+        Bestehende Findings bleiben sichtbar. Neue Alerts werden gepuffert und automatisch analysiert,
+        sobald das Kontingent wieder verfügbar ist.
+      </div>
+      <div class="qb-meta">
+        <span>Erschöpft seit: <strong id="quota-since">–</strong></span>
+        <span>Nächster Versuch in: <strong id="quota-countdown">–</strong></span>
+        <span id="quota-retries" style="display:none">Versuche: <strong id="quota-retry-count">0</strong></span>
+        <span id="queue-waiting">In Retry-Queue: <strong id="rq-size">0</strong> Batch(es)</span>
+      </div>
+      <div id="quota-progress-wrap">
+        <div id="quota-progress-bar" style="width:100%"></div>
+      </div>
+    </div>
+
+    <!-- Historical scan progress banner -->
+    <div id="history-banner">
+      <div class="hb-header">
+        <span>📂</span>
+        <span class="hb-title">Historische Logs werden analysiert …</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)" id="hist-pct">0%</span>
+      </div>
+      <div class="hb-body" id="hist-body">Scanne vorhandene Alert-Logs vor der Installation des Tools.</div>
+      <div id="hist-progress-wrap"><div id="hist-progress-bar" style="width:0%"></div></div>
+    </div>
+
+    <!-- Last batch summary -->
+    <div id="summary-banner">
+      <span class="sb-label">KI-Zusammenfassung · letzter Analyse-Batch</span>
+      <span id="sb-risk-pill"></span>
+      <span id="sb-text" style="margin-left:8px"></span>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="stat-row">
+      <div class="stat-card" id="stat-all" onclick="setFilter(null,null)">
+        <div class="stat-num" id="stat-total">–</div>
+        <div class="stat-label">Alle Findings</div>
+      </div>
+      <div class="stat-card" data-sev="critical" onclick="setFilter('critical',null)">
+        <div class="stat-num" id="stat-critical">0</div>
+        <div class="stat-label">Kritisch</div>
+      </div>
+      <div class="stat-card" data-sev="high" onclick="setFilter('high',null)">
+        <div class="stat-num" id="stat-high">0</div>
+        <div class="stat-label">Hoch</div>
+      </div>
+      <div class="stat-card" data-sev="medium" onclick="setFilter('medium',null)">
+        <div class="stat-num" id="stat-medium">0</div>
+        <div class="stat-label">Mittel</div>
+      </div>
+      <div class="stat-card" data-sev="low" onclick="setFilter('low',null)">
+        <div class="stat-num" id="stat-low">0</div>
+        <div class="stat-label">Niedrig</div>
+      </div>
+      <div class="stat-card" data-sev="info" onclick="setFilter('info',null)">
+        <div class="stat-num" id="stat-info">0</div>
+        <div class="stat-label">Info</div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="section-title" id="section-title">Alle Findings</div>
+      <div class="source-tabs">
+        <div class="tab active" onclick="setSource(null)"   id="tab-all">Alle</div>
+        <div class="tab"       onclick="setSource('live')"  id="tab-live">🟢 Live</div>
+        <div class="tab"       onclick="setSource('history')" id="tab-hist">📂 Historisch</div>
+      </div>
+      <span style="font-size:12px;color:var(--muted)" id="count-label"></span>
+    </div>
+
+    <div id="findings-list"></div>
+    <div id="pagination"></div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const PER = 30;
+let S = { filter: null, source: null, offset: 0, total: 0, open: null, findings: [] };
+
+// Quota countdown interval
+let _countdownTimer = null;
+let _quotaRetryAt   = null;
+
+// ── Severity helpers ───────────────────────────────────────────────────────
+const SEV_LABEL = { critical:'Kritisch', high:'Hoch', medium:'Mittel', low:'Niedrig', info:'Info' };
+const SEV_CLR   = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#3b82f6', info:'#64748b' };
+const RISK_BG   = { critical:'rgba(239,68,68,.15)', high:'rgba(249,115,22,.15)', medium:'rgba(234,179,8,.15)', low:'rgba(59,130,246,.15)', info:'rgba(100,116,139,.1)' };
+
+function sevBadge(s) {
+  return `<span class="sev-badge" data-sev="${s}">${SEV_LABEL[s]||s}</span>`;
+}
+function riskPill(r) {
+  if (!r || r === 'unknown') return '';
+  // Only render known risk values – anything else is dropped
+  const allowed = ['critical','high','medium','low','info'];
+  const safe = allowed.includes(r) ? r : null;
+  if (!safe) return '';
+  const label = SEV_LABEL[safe] || safe;
+  // Build with textContent to avoid XSS – no innerHTML for LLM-sourced data
+  const span = document.createElement('span');
+  span.style.cssText = `display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;background:${RISK_BG[safe]||''};color:${SEV_CLR[safe]||'#fff'}`;
+  span.textContent = label;
+  return span.outerHTML;
+}
+function fmtTime(iso) {
+  if (!iso) return '–';
+  try { const d = new Date(iso.endsWith('Z')?iso:iso+'Z'); return d.toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+  catch { return iso; }
+}
+function relTime(iso) {
+  if (!iso) return '';
+  try {
+    const m = Math.floor((Date.now()-new Date(iso.endsWith('Z')?iso:iso+'Z').getTime())/60000);
+    if (m<1) return 'gerade eben';
+    if (m<60) return `vor ${m} Min.`;
+    const h = Math.floor(m/60);
+    if (h<24) return `vor ${h} Std.`;
+    return `vor ${Math.floor(h/24)} Tag(en)`;
+  } catch { return ''; }
+}
+function fmtDuration(s) {
+  if (s<=0) return 'bald';
+  if (s<60) return `${s}s`;
+  const m = Math.floor(s/60), ss = s%60;
+  if (m<60) return `${m}m ${ss}s`;
+  const h = Math.floor(m/60), mm = m%60;
+  return `${h}h ${mm}m`;
+}
+function esc(s) {
+  if (s==null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── API ────────────────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+async function loadStats() {
+  const s = await api('/api/stats');
+
+  // Gemini dot
+  const dot = document.getElementById('gemini-dot');
+  const lbl = document.getElementById('gemini-label');
+  if (!s.gemini_ok) {
+    dot.className = 'dot err'; lbl.textContent = 'Kein API Key';
+  } else if (s.quota?.exhausted) {
+    dot.className = 'dot err'; lbl.textContent = 'Quota leer';
+  } else {
+    dot.className = 'dot ok'; lbl.textContent = 'Gemini OK';
+  }
+
+  // Buffer
+  document.getElementById('buf-count').textContent = s.buffered_alerts;
+
+  // Retry queue
+  const rqEl = document.getElementById('retry-queue-label');
+  if (s.retry_queue_size > 0) {
+    rqEl.style.display = 'flex';
+    document.getElementById('rq-count').textContent = s.retry_queue_size;
+  } else {
+    rqEl.style.display = 'none';
+  }
+
+  // Last analysis
+  document.getElementById('last-label').textContent =
+    s.last_analysis ? `Letzte Analyse ${relTime(s.last_analysis)}` : 'Noch keine Analyse';
+
+  // Stat cards
+  document.getElementById('stat-total').textContent    = s.total_findings;
+  document.getElementById('stat-critical').textContent = s.by_severity?.critical||0;
+  document.getElementById('stat-high').textContent     = s.by_severity?.high||0;
+  document.getElementById('stat-medium').textContent   = s.by_severity?.medium||0;
+  document.getElementById('stat-low').textContent      = s.by_severity?.low||0;
+  document.getElementById('stat-info').textContent     = s.by_severity?.info||0;
+
+  // Quota banner
+  updateQuotaBanner(s.quota, s.retry_queue_size);
+
+  // History banner
+  updateHistoryBanner(s.history);
+
+  return s;
+}
+
+function updateQuotaBanner(q, rqSize) {
+  const banner = document.getElementById('quota-banner');
+  if (!q?.exhausted) {
+    banner.style.display = 'none';
+    if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
+    return;
+  }
+
+  banner.style.display = 'block';
+  _quotaRetryAt = q.retry_at ? new Date(q.retry_at.endsWith('Z')?q.retry_at:q.retry_at+'Z').getTime()/1000 : null;
+
+  document.getElementById('quota-since').textContent = fmtTime(q.exhausted_since);
+  document.getElementById('rq-size').textContent     = rqSize;
+
+  if (q.retry_count > 1) {
+    document.getElementById('quota-retries').style.display = '';
+    document.getElementById('quota-retry-count').textContent = q.retry_count;
+  }
+
+  if (q.last_error) {
+    document.getElementById('quota-body').textContent =
+      `Gemini-Fehlermeldung: "${q.last_error.slice(0,200)}" — Neue Alerts werden gepuffert und automatisch analysiert sobald das Kontingent wieder verfügbar ist.`;
+  }
+
+  // Countdown (aktualisiert jede Sekunde)
+  if (_countdownTimer) clearInterval(_countdownTimer);
+  const tick = () => {
+    if (!_quotaRetryAt) return;
+    const remaining = Math.max(0, Math.floor(_quotaRetryAt - Date.now()/1000));
+    document.getElementById('quota-countdown').textContent = fmtDuration(remaining);
+    // Progress bar: läuft von 100% auf 0%
+    const totalWait = q.retry_count <= 1 ? 65 : 3600;
+    const pct = Math.min(100, Math.round(remaining / totalWait * 100));
+    document.getElementById('quota-progress-bar').style.width = pct + '%';
+  };
+  tick();
+  _countdownTimer = setInterval(tick, 1000);
+}
+
+function updateHistoryBanner(h) {
+  const banner = document.getElementById('history-banner');
+  if (!h || h.done) { banner.style.display = 'none'; return; }
+
+  banner.style.display = 'block';
+  const total = h.files_total || 1;
+  const done  = h.files_done  || 0;
+  const pct   = Math.round(done / total * 100);
+  document.getElementById('hist-pct').textContent       = pct + '%';
+  document.getElementById('hist-progress-bar').style.width = pct + '%';
+  document.getElementById('hist-body').textContent      =
+    `Datei ${done} von ${total} gescannt · ${h.alerts_scanned} Alerts verarbeitet · ${h.batches_done} Batches analysiert`;
+}
+
+// ── Summary ────────────────────────────────────────────────────────────────
+async function loadSummary() {
+  try {
+    const batches = await api('/api/batches');
+    const last = batches.filter(b=>b.status==='done')[0];
+    if (!last?.summary) return;
+    document.getElementById('sb-text').textContent = last.summary;
+    document.getElementById('sb-risk-pill').innerHTML = riskPill(last.overall_risk);  // riskPill() is XSS-safe: validates enum + builds via textContent
+    document.getElementById('summary-banner').style.display = 'block';
+  } catch(_) {}
+}
+
+// ── Findings ───────────────────────────────────────────────────────────────
+async function loadFindings() {
+  const list = document.getElementById('findings-list');
+  list.innerHTML = Array(4).fill('<div class="skeleton" style="margin-bottom:7px"></div>').join('');
+
+  const qs = new URLSearchParams({ limit: PER, offset: S.offset });
+  if (S.filter) qs.set('severity', S.filter);
+  if (S.source) qs.set('source',   S.source);
+
+  const data = await api(`/api/findings?${qs}`);
+  S.findings = data.findings;
+  S.total    = data.total;
+
+  renderFindings();
+  renderPagination();
+  document.getElementById('count-label').textContent = data.total ? `${data.total} Einträge` : '';
+}
+
+function renderFindings() {
+  const list = document.getElementById('findings-list');
+  if (!S.findings.length) {
+    list.innerHTML = `<div class="empty-state"><div class="icon">🔍</div><h3>Keine Findings</h3><p>Wazuh-Alerts werden gesammelt und automatisch analysiert sobald sie eintreffen.</p></div>`;
+    return;
+  }
+  list.innerHTML = '';
+  for (const f of S.findings) {
+    const isOpen = f.id === S.open;
+    const srcPip = `<span class="src-pip ${f.source||'live'}">${f.source==='history'?'Historisch':'Live'}</span>`;
+    const card = document.createElement('div');
+    card.className = `finding-card${isOpen?' expanded':''}`;
+    card.dataset.sev = f.severity;
+    card.innerHTML = `
+      ${sevBadge(f.severity)}
+      <div class="fc-body">
+        <div class="fc-title">${esc(f.title)}</div>
+        <div class="fc-meta">
+          <span>${fmtTime(f.batch_time)}</span>
+          <span>${srcPip}</span>
+          ${f.affected_agents?.length ? `<span>${f.affected_agents.map(esc).join(', ')}</span>` : ''}
+          ${f.rule_ids?.length ? `<span>Regel ${f.rule_ids.map(esc).join(', ')}</span>` : ''}
+        </div>
+      </div>
+      <span class="fc-arrow">›</span>`;
+    card.addEventListener('click', () => toggleDetail(f.id));
+    list.appendChild(card);
+    if (isOpen) list.appendChild(makeDetail(f));
+  }
+}
+
+function makeDetail(f) {
+  const el = document.createElement('div');
+  el.className = 'detail-panel';
+  el.innerHTML = `
+    <h3>${sevBadge(f.severity)} ${esc(f.title)}</h3>
+    <div class="ds">
+      <label>🔍 Was ist das Problem?</label>
+      <p>${esc(f.description)}</p>
+    </div>
+    <div class="ds">
+      <label>✅ Handlungsempfehlung</label>
+      <div class="rec-block">${esc(f.recommendation)}</div>
+    </div>
+    ${f.affected_agents?.length ? `
+    <div class="ds">
+      <label>🖥 Betroffene Systeme</label>
+      <div class="tag-list">${f.affected_agents.map(a=>`<span class="tag">${esc(a)}</span>`).join('')}</div>
+    </div>` : ''}
+    ${f.rule_ids?.length ? `
+    <div class="ds">
+      <label>📋 Wazuh Regel-IDs</label>
+      <div class="tag-list">${f.rule_ids.map(r=>`<span class="tag">${esc(r)}</span>`).join('')}</div>
+    </div>` : ''}
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">
+      Analysiert ${fmtTime(f.batch_time)} · Batch #${f.batch_id}
+      ${f.source==='history'?'· <span style="color:#a5b4fc">historischer Scan</span>':''}
+    </div>`;
+  return el;
+}
+
+async function toggleDetail(id) {
+  if (S.open === id) { S.open = null; renderFindings(); return; }
+  S.open = id;
+  renderFindings();
+}
+
+// ── Pagination ─────────────────────────────────────────────────────────────
+function renderPagination() {
+  const el = document.getElementById('pagination');
+  const pages = Math.ceil(S.total / PER);
+  const cur   = Math.floor(S.offset / PER);
+  if (pages <= 1) { el.innerHTML = ''; return; }
+  let h = '';
+  if (cur > 0)       h += `<button class="btn" onclick="goPage(${cur-1})">← Zurück</button>`;
+  h += `<span style="font-size:12px;color:var(--muted);line-height:30px">Seite ${cur+1}/${pages}</span>`;
+  if (cur < pages-1) h += `<button class="btn" onclick="goPage(${cur+1})">Weiter →</button>`;
+  el.innerHTML = h;
+}
+function goPage(p) {
+  S.offset = p * PER; S.open = null;
+  loadFindings(); window.scrollTo({top:0,behavior:'smooth'});
+}
+
+// ── Filters ────────────────────────────────────────────────────────────────
+function setFilter(sev, src) {
+  S.filter = sev; S.offset = 0; S.open = null;
+  document.querySelectorAll('.stat-card').forEach(c=>c.classList.remove('active'));
+  (sev ? document.querySelector(`.stat-card[data-sev="${sev}"]`) : document.getElementById('stat-all'))?.classList.add('active');
+  const lbl = {critical:'Kritisch',high:'Hoch',medium:'Mittel',low:'Niedrig',info:'Info'};
+  document.getElementById('section-title').textContent = sev ? `${lbl[sev]} Findings` : 'Alle Findings';
+  loadFindings();
+}
+function setSource(src) {
+  S.source = src; S.offset = 0; S.open = null;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(src?`tab-${src}`:'tab-all')?.classList.add('active');
+  loadFindings();
+}
+
+// ── Refresh ────────────────────────────────────────────────────────────────
+let _busy = false;
+async function refresh() {
+  if (_busy) return; _busy = true;
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  try {
+    await Promise.all([loadStats(), loadSummary()]);
+    await loadFindings();
+  } catch(e) { toast('Fehler: ' + e.message, true); }
+  finally { _busy = false; setTimeout(()=>btn.classList.remove('spinning'),500); }
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+let _tt;
+function toast(msg, err=false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = err?'rgba(239,68,68,.4)':'rgba(99,102,241,.4)';
+  el.classList.add('show');
+  clearTimeout(_tt); _tt = setTimeout(()=>el.classList.remove('show'), 3500);
+}
+
+// ── Auto-refresh ───────────────────────────────────────────────────────────
+setInterval(() => {
+  loadStats().catch(()=>{});
+  if (!S.open) loadFindings().catch(()=>{});
+}, 20000);
+
+// ── Init ───────────────────────────────────────────────────────────────────
+(async () => {
+  document.getElementById('stat-all').classList.add('active');
+  try {
+    await Promise.all([loadStats(), loadSummary()]);
+    await loadFindings();
+  } catch(e) {
+    document.getElementById('findings-list').innerHTML = `
+      <div class="empty-state">
+        <div class="icon">⚠️</div>
+        <h3>Backend nicht erreichbar</h3>
+        <p><code>systemctl status wazuh-ai-analyzer</code><br>
+           <code>journalctl -u wazuh-ai-analyzer -f</code></p>
+      </div>`;
+  }
+})();
+</script>
+</body>
+</html>
