@@ -23,7 +23,7 @@ INSTALL_DIR="/opt/wazuh-ai-analyzer"
 SERVICE_NAME="wazuh-ai-analyzer"
 ENV_FILE="/etc/wazuh-ai-analyzer.env"
 # Set this to your own fork URL, or leave as-is to use the default repo:
-REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/YOUR_GITHUB_USER/wazuh-ai-analyzer/main}"
+REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main}"
 DEFAULT_PORT=8765
 
 # =============================================================================
@@ -335,11 +335,10 @@ fi
 
 # API-Erreichbarkeit testen
 sleep 3
-if curl -sf "http://127.0.0.1:${PORT}/api/stats" \
-    ${DASHBOARD_TOKEN:+-H "X-Dashboard-Token: ${DASHBOARD_TOKEN}"} >/dev/null 2>&1; then
-    ok "Dashboard API erreichbar ✓"
+if curl -sf "http://127.0.0.1:${PORT}/login" >/dev/null 2>&1; then
+    ok "Dashboard erreichbar ✓"
 else
-    warn "API noch nicht erreichbar – Service startet ggf. noch"
+    warn "Dashboard noch nicht erreichbar – Service startet ggf. noch"
 fi
 
 # =============================================================================
