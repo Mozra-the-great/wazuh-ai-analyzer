@@ -190,7 +190,7 @@ ok "Verzeichnisse: ${INSTALL_DIR}"
 # Schritt 5: Python venv + Abhängigkeiten
 # =============================================================================
 info "Python venv einrichten …"
-python3 -m venv "${INSTALL_DIR}/venv" --upgrade-deps --quiet
+python3 -m venv "${INSTALL_DIR}/venv" || error "venv-Erstellung fehlgeschlagen – python3-venv installiert?"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install --quiet flask requests werkzeug
 ok "Python-Pakete: flask, requests, werkzeug"
