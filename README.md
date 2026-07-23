@@ -117,6 +117,7 @@ systemctl restart wazuh-ai-analyzer
 | `DASHBOARD_PASSWORD_HASH` | – | pbkdf2:sha256 Hash (kein Klartext!) |
 | `SESSION_LIFETIME` | `28800` | Session-Dauer in Sekunden (8 Stunden) |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Max. Fehlversuche vor 60s Sperre |
+| `SESSION_COOKIE_SECURE` | `true` | Session-Cookie nur über HTTPS senden (`false` nur falls ein spezielles Setup den Cookie über reines HTTP benötigt) |
 
 ### Infra-Kontext Beispiele
 
@@ -263,6 +264,7 @@ Das Dashboard zeigt priorisierte Sicherheitsschwachstellen deiner Infrastruktur,
 | Brute-Force-Schutz | Nach 5 Fehlversuchen 60s Sperre pro IP |
 | ProxyFix | Echte Client-IP hinter Reverse Proxies (X-Forwarded-For) |
 | Session-Key | Zufällig generiert, persistent, chmod 600 |
+| Session-Cookie | `Secure` (nur HTTPS) und `SameSite=Lax` gesetzt |
 | LLM-Whitelist | `overall_risk` und `severity` werden gegen Enum geprüft – Prompt Injection landet nicht in der DB |
 | noindex Meta-Tag | Suchmaschinen indexieren das Dashboard nicht |
 | Generischer Titel | `Security Dashboard` statt produktspezifischer Name (erschwert Shodan-Fingerprinting) |

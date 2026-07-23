@@ -53,6 +53,11 @@ DASHBOARD_PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH", "").strip()
 SESSION_LIFETIME     = int(os.environ.get("SESSION_LIFETIME", str(8 * 3600)))
 # Max failed login attempts before 60s cooldown
 LOGIN_MAX_ATTEMPTS   = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+# Marks the session cookie Secure (HTTPS-only). Modern browsers treat
+# 127.0.0.1/localhost as a secure context, so this stays safe with the
+# documented SSH-tunnel default (LISTEN_HOST=127.0.0.1) - disable only if a
+# specific browser/proxy setup needs the cookie over plain HTTP.
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
 
 WATERMARK_FILE       = Path(DB_PATH).parent / "watermark.json"
 SESSION_KEY_FILE     = Path(DB_PATH).parent / "session.key"
@@ -69,6 +74,8 @@ app = Flask(__name__, static_folder=STATIC_DIR)
 # Trust X-Forwarded-For from up to 1 upstream proxy (e.g. Nginx).
 # Increase x_for if multiple proxies are chained.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+app.config["SESSION_COOKIE_SECURE"]   = SESSION_COOKIE_SECURE
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 def _load_or_create_session_key() -> bytes:
     """Persistent secret key for Flask sessions. Generated once, stored on disk."""
