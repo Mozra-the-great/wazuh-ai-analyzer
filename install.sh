@@ -268,6 +268,12 @@ SESSION_LIFETIME=28800
 # Maximale Fehlversuche vor 60s Sperre
 LOGIN_MAX_ATTEMPTS=5
 
+# Anzahl vertrauenswürdiger Reverse-Proxy-Hops vor dieser App (0 = deaktiviert).
+# Nur auf 1 setzen, wenn wirklich ein Reverse Proxy (z. B. Nginx) davor steht und
+# X-Forwarded-For korrekt überschreibt – sonst kann jeder Client seine IP fürs
+# Login-Rate-Limiting fälschen. Siehe README "Optional: Als Subdomain verfügbar machen".
+TRUSTED_PROXY_HOPS=0
+
 # Historische Analyse (Logs von vor der Installation)
 HISTORY_BATCH=50
 HISTORY_PAUSE=8

@@ -53,6 +53,12 @@ DASHBOARD_PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH", "").strip()
 SESSION_LIFETIME     = int(os.environ.get("SESSION_LIFETIME", str(8 * 3600)))
 # Max failed login attempts before 60s cooldown
 LOGIN_MAX_ATTEMPTS   = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+# Number of trusted reverse-proxy hops in front of this app (e.g. 1 for a single
+# Nginx/Traefik in front). 0 (default) disables ProxyFix entirely - X-Forwarded-For
+# is client-controlled and MUST NOT be trusted unless a real proxy is confirmed to
+# be overwriting it before the request reaches this app, since the login
+# rate-limiter is keyed on the resulting request.remote_addr.
+TRUSTED_PROXY_HOPS   = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
 
 WATERMARK_FILE       = Path(DB_PATH).parent / "watermark.json"
 SESSION_KEY_FILE     = Path(DB_PATH).parent / "session.key"
@@ -66,9 +72,16 @@ logging.basicConfig(
 log = logging.getLogger("wazuh-ai")
 
 app = Flask(__name__, static_folder=STATIC_DIR)
-# Trust X-Forwarded-For from up to 1 upstream proxy (e.g. Nginx).
-# Increase x_for if multiple proxies are chained.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+# Only trust X-Forwarded-For/-Proto/-Host when a trusted reverse proxy is
+# explicitly configured (TRUSTED_PROXY_HOPS > 0). Applying ProxyFix
+# unconditionally let any client spoof request.remote_addr via a fake
+# X-Forwarded-For header, bypassing the per-IP login lockout below.
+if TRUSTED_PROXY_HOPS > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=TRUSTED_PROXY_HOPS, x_proto=TRUSTED_PROXY_HOPS, x_host=TRUSTED_PROXY_HOPS
+    )
+else:
+    log.info("TRUSTED_PROXY_HOPS=0 – ProxyFix disabled, request.remote_addr is the raw socket peer.")
 
 def _load_or_create_session_key() -> bytes:
     """Persistent secret key for Flask sessions. Generated once, stored on disk."""
