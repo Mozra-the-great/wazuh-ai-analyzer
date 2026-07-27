@@ -19,6 +19,7 @@ from pathlib import Path
 import hashlib
 import hmac
 import secrets
+from urllib.parse import urlparse
 from flask import Flask, jsonify, request, abort, send_from_directory, session, redirect, url_for, make_response
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -117,6 +118,20 @@ def _is_authenticated() -> bool:
             session.get("user") == DASHBOARD_USER and
             time.time() < session.get("expires_at", 0))
 
+def _safe_next_path(next_url: str) -> str:
+    """Only allow local, relative redirect targets (post-login `next` param).
+
+    A leading "/" alone isn't enough: "//evil.com" and "/\\evil.com" are
+    scheme-relative URLs that browsers resolve to an external host, and
+    urlparse().netloc catches those plus any URL that smuggles in a scheme.
+    """
+    if not next_url.startswith("/") or next_url.startswith("//") or next_url.startswith("/\\"):
+        return "/"
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return next_url
+
 # ─── Auth middleware ──────────────────────────────────────────────────────────
 @app.before_request
 def require_login():
@@ -163,9 +178,7 @@ def login_route():
                 session["expires_at"]    = time.time() + SESSION_LIFETIME
                 session.permanent        = True
                 log.info(f"Login erfolgreich: {username} von {ip}")
-                next_url = request.args.get("next", "/")
-                if not next_url.startswith("/"):
-                    next_url = "/"
+                next_url = _safe_next_path(request.args.get("next", "/"))
                 return redirect(next_url)
             else:
                 _record_failed(ip)
