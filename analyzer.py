@@ -5,6 +5,7 @@ Analysiert Wazuh-Alerts mit Google Gemini AI und zeigt sie im Web-Dashboard.
 Erstellt mithilfe von KI (Claude by Anthropic)
 """
 
+import html
 import json
 import os
 import sqlite3
@@ -187,7 +188,7 @@ def logout_route():
 
 # ─── Login page HTML ──────────────────────────────────────────────────────────
 def _login_html(error: str = None, query_string: str = "") -> str:
-    next_param = f"?{query_string}" if query_string else ""
+    next_param = f"?{html.escape(query_string)}" if query_string else ""
     err_block  = (f'<div class="err">{error}</div>') if error else ""
     return f"""<!DOCTYPE html>
 <html lang="de">
