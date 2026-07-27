@@ -16,6 +16,7 @@ import glob
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlparse
 import hashlib
 import hmac
 import secrets
@@ -164,7 +165,15 @@ def login_route():
                 session.permanent        = True
                 log.info(f"Login erfolgreich: {username} von {ip}")
                 next_url = request.args.get("next", "/")
-                if not next_url.startswith("/"):
+                # Reject anything that isn't a same-site relative path: a
+                # scheme-relative URL ("//evil.com", browsers resolve this
+                # against the current scheme), an absolute URL with a scheme
+                # ("https://evil.com"), or a backslash-led path ("/\evil.com",
+                # which some browsers normalize to "//evil.com"). Checking
+                # only for a leading "/" lets all of these through.
+                check_url = next_url.replace("\\", "/")
+                parsed = urlparse(check_url)
+                if not check_url.startswith("/") or check_url.startswith("//") or parsed.netloc or parsed.scheme:
                     next_url = "/"
                 return redirect(next_url)
             else:
@@ -999,4 +1008,3 @@ if __name__ == "__main__":
         log.warning("SICHERHEIT: Dashboard auf " + LISTEN_HOST + " OHNE Passwort – Zugriff nicht möglich!")
 
     app.run(host=LISTEN_HOST, port=PORT, debug=False, threaded=True, use_reloader=False)
-
