@@ -21,6 +21,9 @@ error()   { echo -e "  ${RED}[✗]${NC}  $*" >&2; exit 1; }
 
 INSTALL_DIR="/opt/wazuh-ai-analyzer"
 SERVICE_NAME="wazuh-ai-analyzer"
+SERVICE_USER="wazuh-ai-analyzer"
+SERVICE_GROUP="wazuh-ai-analyzer"
+ALERTS_DIR="/var/ossec/logs/alerts"
 ENV_FILE="/etc/wazuh-ai-analyzer.env"
 # Set this to your own fork URL, or leave as-is to use the default repo:
 REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main}"
@@ -179,6 +182,31 @@ apt-get install -y -qq python3 python3-pip python3-venv curl
 ok "System-Pakete installiert"
 
 # =============================================================================
+# Schritt 3b: Dedizierten Service-Benutzer anlegen
+# =============================================================================
+info "Service-Benutzer einrichten …"
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+    ok "Benutzer ${SERVICE_USER} angelegt (unprivilegiert, kein Login, kein Home)"
+else
+    ok "Benutzer ${SERVICE_USER} existiert bereits"
+fi
+
+# Lesezugriff auf Wazuh-Alert-Logs über die Gruppe gewähren, der das Log-Verzeichnis gehört
+# (typischerweise "wazuh"), statt den Service als root laufen zu lassen.
+if [[ -d "$ALERTS_DIR" ]]; then
+    ALERTS_GROUP=$(stat -c '%G' "$ALERTS_DIR" 2>/dev/null || echo "")
+    if [[ -n "$ALERTS_GROUP" && "$ALERTS_GROUP" != "UNKNOWN" ]]; then
+        usermod -aG "$ALERTS_GROUP" "$SERVICE_USER"
+        ok "${SERVICE_USER} zur Gruppe '${ALERTS_GROUP}' hinzugefügt (Lesezugriff auf ${ALERTS_DIR})"
+    else
+        warn "Eigentümer-Gruppe von ${ALERTS_DIR} konnte nicht ermittelt werden – bitte Lesezugriff manuell prüfen"
+    fi
+else
+    warn "${ALERTS_DIR} noch nicht vorhanden – Gruppenzugriff wird beim nächsten Lauf geprüft"
+fi
+
+# =============================================================================
 # Schritt 4: Verzeichnisse anlegen
 # =============================================================================
 info "Verzeichnisse anlegen …"
@@ -229,6 +257,9 @@ download "analyzer.py"          "${INSTALL_DIR}/analyzer.py"
 download "static/index.html"    "${INSTALL_DIR}/static/index.html"
 
 ok "Dateien heruntergeladen"
+
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$INSTALL_DIR"
+ok "Eigentümer von ${INSTALL_DIR}: ${SERVICE_USER}:${SERVICE_GROUP}"
 
 # =============================================================================
 # Schritt 7: Umgebungsvariablen schreiben
@@ -287,7 +318,8 @@ Wants=wazuh-manager.service
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 analyzer.py
@@ -296,6 +328,13 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${SERVICE_NAME}
+
+# Hardening – Service braucht nur Lesezugriff auf ${ALERTS_DIR} und
+# Schreibzugriff auf sein eigenes Datenverzeichnis, sonst nichts.
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=${INSTALL_DIR}/data
 
 # Ressourcen-Limits (schonend für LXC)
 MemoryLimit=256M
