@@ -26,6 +26,13 @@ ENV_FILE="/etc/wazuh-ai-analyzer.env"
 REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main}"
 DEFAULT_PORT=8765
 
+download() {
+    local src="$1" dst="$2"
+    if ! curl -fsSL "${REPO_URL}/${src}" -o "$dst"; then
+        error "Download fehlgeschlagen: ${src}"
+    fi
+}
+
 # =============================================================================
 echo ""
 echo -e "${BOLD}  ██████╗  ██████╗ ██╗    ██╗███████╗██████╗ ${NC}"
@@ -192,8 +199,9 @@ ok "Verzeichnisse: ${INSTALL_DIR}"
 info "Python venv einrichten …"
 python3 -m venv "${INSTALL_DIR}/venv" || error "venv-Erstellung fehlgeschlagen – python3-venv installiert?"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv/bin/pip" install --quiet flask requests werkzeug
-ok "Python-Pakete: flask, requests, werkzeug"
+download "requirements.txt" "${INSTALL_DIR}/requirements.txt"
+"${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt"
+ok "Python-Pakete: $(tr '\n' ' ' < "${INSTALL_DIR}/requirements.txt")"
 
 # Passwort hashen – jetzt wo Werkzeug im venv verfügbar ist
 info "Passwort-Hash generieren …"
@@ -217,13 +225,6 @@ ok "Passwort-Hash erstellt (Klartext entfernt)"
 # Schritt 6: Dateien herunterladen
 # =============================================================================
 info "Dateien herunterladen …"
-
-download() {
-    local src="$1" dst="$2"
-    if ! curl -fsSL "${REPO_URL}/${src}" -o "$dst"; then
-        error "Download fehlgeschlagen: ${src}"
-    fi
-}
 
 download "analyzer.py"          "${INSTALL_DIR}/analyzer.py"
 download "static/index.html"    "${INSTALL_DIR}/static/index.html"
