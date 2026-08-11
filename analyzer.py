@@ -732,10 +732,8 @@ def call_gemini(groups: list) -> tuple:
         return None, "error"
 
     prompt  = _PROMPT_TPL.format(infra=INFRA_CONTEXT, groups=json.dumps(groups, ensure_ascii=False, indent=2))
-    url     = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
+    url     = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": GEMINI_TEMPERATURE, "responseMimeType": "application/json"},
@@ -743,7 +741,7 @@ def call_gemini(groups: list) -> tuple:
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=90)
+        resp = requests.post(url, json=payload, headers=headers, timeout=90)
 
         # ── 429: Rate-Limit oder Tages-Quota ─────────────────────────────
         if resp.status_code == 429:
