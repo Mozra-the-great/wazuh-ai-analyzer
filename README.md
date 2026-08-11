@@ -23,7 +23,7 @@ Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
 - 🔁 **Retry-Queue** – bei Quota-Erschöpfung werden Batches geparkt und später erneut gesendet, kein Datenverlust
 - 🌐 **Web-Dashboard** – Severity-Filter, Live/Historisch-Tabs, Klick-Detail mit Erklärung und Handlungsempfehlung
 - 🧠 **Infra-Kontext** – beschreibe deine Infrastruktur einmalig beim Setup, Gemini gibt passendere Empfehlungen
-- 🛡️ **Gehärtete Architektur** – WAL-Modus für SQLite, ProxyFix für korrekte IPs hinter Reverse Proxies, LLM-Output-Whitelist gegen Prompt Injection
+- 🛡️ **Gehärtete Architektur** – dedizierter unprivilegierter Service-User, WAL-Modus für SQLite, ProxyFix für korrekte IPs hinter Reverse Proxies, LLM-Output-Whitelist gegen Prompt Injection
 
 ---
 
@@ -82,6 +82,10 @@ Der Installer fragt interaktiv nach:
 | Benutzername | `admin` | Login-Benutzername |
 | Passwort | – | Min. 8 Zeichen, wird als Hash gespeichert |
 | Bind-Adresse | `127.0.0.1` | `0.0.0.0` nur hinter HTTPS-Proxy |
+
+Der Installer legt außerdem einen dedizierten, unprivilegierten System-User
+(`wazuh-ai-analyzer`) an, unter dem der Service läuft (siehe
+[Sicherheit & Hardening](#sicherheit--hardening)).
 
 Nach der Installation ist das Dashboard erreichbar unter:
 ```
@@ -233,7 +237,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-ana
 ## Datenspeicherung
 
 ```
-/opt/wazuh-ai-analyzer/
+/opt/wazuh-ai-analyzer/            # gehört dem Service-User "wazuh-ai-analyzer"
 ├── analyzer.py              # Backend
 ├── static/
 │   └── index.html           # Dashboard
@@ -259,6 +263,8 @@ Das Dashboard zeigt priorisierte Sicherheitsschwachstellen deiner Infrastruktur,
 
 | Maßnahme | Details |
 |---|---|
+| Dedizierter Service-User | Läuft als unprivilegierter System-User `wazuh-ai-analyzer` (kein root), nur Mitglied der Gruppe die `alerts.json` gehört |
+| systemd-Hardening | `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`; Schreibzugriff nur auf `data/` |
 | Login-Pflicht | Jede Route (inkl. API) erfordert eine gültige Session |
 | Passwort-Hashing | pbkdf2:sha256 via Werkzeug – Klartext wird nie gespeichert |
 | Brute-Force-Schutz | Nach 5 Fehlversuchen 60s Sperre pro IP |
@@ -300,7 +306,7 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 | KI | Google Gemini 1.5 Flash (REST API, kostenlos) |
 | Datenbank | SQLite (WAL-Modus, multi-threaded sicher) |
 | Frontend | Vanilla JS, kein Framework |
-| Service | systemd (MemoryLimit 256M, CPUQuota 25%) |
+| Service | systemd, läuft als dedizierter unprivilegierter User (MemoryLimit 256M, CPUQuota 25%) |
 | Auth | Session-basiert, pbkdf2:sha256, Brute-Force-Schutz |
 | Proxy-Support | Werkzeug ProxyFix (X-Forwarded-For) |
 | Log-Rotation | Inode-basierter Watcher, automatisches Reopen |
