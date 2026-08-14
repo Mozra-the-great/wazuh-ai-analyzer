@@ -317,4 +317,4 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 
 ## Lizenz
 
-MIT
+GNU General Public License v3.0 — siehe [LICENSE](LICENSE).
