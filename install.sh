@@ -80,7 +80,7 @@ if [[ -z "$GEMINI_KEY" ]]; then
     echo -e "  ${CYAN}https://aistudio.google.com/app/apikey${NC}"
     echo ""
     echo -ne "  ${BOLD}Gemini API Key:${NC} "
-    read -r GEMINI_KEY </dev/tty
+    read -rs GEMINI_KEY </dev/tty
     echo ""
     [[ -n "$GEMINI_KEY" ]] || error "Kein API Key eingegeben – Abbruch"
 fi
