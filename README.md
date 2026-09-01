@@ -23,7 +23,7 @@ Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
 - 🔁 **Retry-Queue** – bei Quota-Erschöpfung werden Batches geparkt und später erneut gesendet, kein Datenverlust
 - 🌐 **Web-Dashboard** – Severity-Filter, Live/Historisch-Tabs, Klick-Detail mit Erklärung und Handlungsempfehlung
 - 🧠 **Infra-Kontext** – beschreibe deine Infrastruktur einmalig beim Setup, Gemini gibt passendere Empfehlungen
-- 🛡️ **Gehärtete Architektur** – WAL-Modus für SQLite, ProxyFix für korrekte IPs hinter Reverse Proxies, LLM-Output-Whitelist gegen Prompt Injection
+- 🛡️ **Gehärtete Architektur** – dedizierter unprivilegierter Service-User, WAL-Modus für SQLite, ProxyFix für korrekte IPs hinter Reverse Proxies, LLM-Output-Whitelist gegen Prompt Injection
 
 ---
 
@@ -83,6 +83,10 @@ Der Installer fragt interaktiv nach:
 | Passwort | – | Min. 8 Zeichen, wird als Hash gespeichert |
 | Bind-Adresse | `127.0.0.1` | `0.0.0.0` nur hinter HTTPS-Proxy |
 
+Der Installer legt außerdem einen dedizierten, unprivilegierten System-User
+(`wazuh-ai-analyzer`) an, unter dem der Service läuft (siehe
+[Sicherheit & Hardening](#sicherheit--hardening)).
+
 Nach der Installation ist das Dashboard erreichbar unter:
 ```
 http://<SERVER-IP>:8765/login
@@ -118,6 +122,7 @@ systemctl restart wazuh-ai-analyzer
 | `SESSION_LIFETIME` | `28800` | Session-Dauer in Sekunden (8 Stunden) |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Max. Fehlversuche vor 60s Sperre |
 | `TRUSTED_PROXY_HOPS` | `0` | Anzahl vertrauenswürdiger Reverse-Proxy-Hops vor der App. `0` = ProxyFix deaktiviert, `request.remote_addr` ist die rohe Socket-Peer-IP. Nur auf `1` setzen, wenn wirklich ein Reverse Proxy (z. B. Nginx, siehe unten) `X-Forwarded-For` korrekt überschreibt – sonst kann jeder Client die IP fürs Login-Rate-Limiting fälschen. |
+| `SESSION_COOKIE_SECURE` | `true` | Session-Cookie nur über HTTPS senden (`false` nur falls ein spezielles Setup den Cookie über reines HTTP benötigt) |
 
 ### Infra-Kontext Beispiele
 
@@ -235,7 +240,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-ana
 ## Datenspeicherung
 
 ```
-/opt/wazuh-ai-analyzer/
+/opt/wazuh-ai-analyzer/            # gehört dem Service-User "wazuh-ai-analyzer"
 ├── analyzer.py              # Backend
 ├── static/
 │   └── index.html           # Dashboard
@@ -261,11 +266,14 @@ Das Dashboard zeigt priorisierte Sicherheitsschwachstellen deiner Infrastruktur,
 
 | Maßnahme | Details |
 |---|---|
+| Dedizierter Service-User | Läuft als unprivilegierter System-User `wazuh-ai-analyzer` (kein root), nur Mitglied der Gruppe die `alerts.json` gehört |
+| systemd-Hardening | `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`; Schreibzugriff nur auf `data/` |
 | Login-Pflicht | Jede Route (inkl. API) erfordert eine gültige Session |
 | Passwort-Hashing | pbkdf2:sha256 via Werkzeug – Klartext wird nie gespeichert |
 | Brute-Force-Schutz | Nach 5 Fehlversuchen 60s Sperre pro IP |
 | ProxyFix | Echte Client-IP hinter Reverse Proxies (X-Forwarded-For) |
 | Session-Key | Zufällig generiert, persistent, chmod 600 |
+| Session-Cookie | `Secure` (nur HTTPS) und `SameSite=Lax` gesetzt |
 | LLM-Whitelist | `overall_risk` und `severity` werden gegen Enum geprüft – Prompt Injection landet nicht in der DB |
 | noindex Meta-Tag | Suchmaschinen indexieren das Dashboard nicht |
 | Generischer Titel | `Security Dashboard` statt produktspezifischer Name (erschwert Shodan-Fingerprinting) |
@@ -301,7 +309,7 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 | KI | Google Gemini 1.5 Flash (REST API, kostenlos) |
 | Datenbank | SQLite (WAL-Modus, multi-threaded sicher) |
 | Frontend | Vanilla JS, kein Framework |
-| Service | systemd (MemoryLimit 256M, CPUQuota 25%) |
+| Service | systemd, läuft als dedizierter unprivilegierter User (MemoryLimit 256M, CPUQuota 25%) |
 | Auth | Session-basiert, pbkdf2:sha256, Brute-Force-Schutz |
 | Proxy-Support | Werkzeug ProxyFix (X-Forwarded-For) |
 | Log-Rotation | Inode-basierter Watcher, automatisches Reopen |
@@ -312,4 +320,4 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 
 ## Lizenz
 
-MIT
+GNU General Public License v3.0 — siehe [LICENSE](LICENSE).

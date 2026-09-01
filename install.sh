@@ -21,10 +21,18 @@ error()   { echo -e "  ${RED}[✗]${NC}  $*" >&2; exit 1; }
 
 INSTALL_DIR="/opt/wazuh-ai-analyzer"
 SERVICE_NAME="wazuh-ai-analyzer"
+SERVICE_USER="wazuh-ai-analyzer"
 ENV_FILE="/etc/wazuh-ai-analyzer.env"
 # Set this to your own fork URL, or leave as-is to use the default repo:
 REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main}"
 DEFAULT_PORT=8765
+
+download() {
+    local src="$1" dst="$2"
+    if ! curl -fsSL "${REPO_URL}/${src}" -o "$dst"; then
+        error "Download fehlgeschlagen: ${src}"
+    fi
+}
 
 # =============================================================================
 echo ""
@@ -72,7 +80,7 @@ if [[ -z "$GEMINI_KEY" ]]; then
     echo -e "  ${CYAN}https://aistudio.google.com/app/apikey${NC}"
     echo ""
     echo -ne "  ${BOLD}Gemini API Key:${NC} "
-    read -r GEMINI_KEY </dev/tty
+    read -rs GEMINI_KEY </dev/tty
     echo ""
     [[ -n "$GEMINI_KEY" ]] || error "Kein API Key eingegeben – Abbruch"
 fi
@@ -192,8 +200,9 @@ ok "Verzeichnisse: ${INSTALL_DIR}"
 info "Python venv einrichten …"
 python3 -m venv "${INSTALL_DIR}/venv" || error "venv-Erstellung fehlgeschlagen – python3-venv installiert?"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv/bin/pip" install --quiet flask requests werkzeug
-ok "Python-Pakete: flask, requests, werkzeug"
+download "requirements.txt" "${INSTALL_DIR}/requirements.txt"
+"${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt"
+ok "Python-Pakete: $(tr '\n' ' ' < "${INSTALL_DIR}/requirements.txt")"
 
 # Passwort hashen – jetzt wo Werkzeug im venv verfügbar ist
 info "Passwort-Hash generieren …"
@@ -217,13 +226,6 @@ ok "Passwort-Hash erstellt (Klartext entfernt)"
 # Schritt 6: Dateien herunterladen
 # =============================================================================
 info "Dateien herunterladen …"
-
-download() {
-    local src="$1" dst="$2"
-    if ! curl -fsSL "${REPO_URL}/${src}" -o "$dst"; then
-        error "Download fehlgeschlagen: ${src}"
-    fi
-}
 
 download "analyzer.py"          "${INSTALL_DIR}/analyzer.py"
 download "static/index.html"    "${INSTALL_DIR}/static/index.html"
@@ -282,7 +284,40 @@ chmod 600 "$ENV_FILE"  # Enthält API Key und Passwort-Hash – nur root lesbar
 ok "Konfiguration gespeichert (chmod 600)"
 
 # =============================================================================
-# Schritt 8: systemd Service
+# Schritt 8: Dedizierter Service-User
+# =============================================================================
+info "Dedizierten Service-User einrichten …"
+
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+    ok "System-User ${SERVICE_USER} angelegt"
+else
+    info "System-User ${SERVICE_USER} existiert bereits"
+fi
+
+# Der Service braucht nur Lesezugriff auf die Wazuh Alert-Logs, daher
+# Mitgliedschaft in der Gruppe, der die Log-Datei gehört (i.d.R. "wazuh"),
+# statt root-Rechten.
+ALERTS_LOG_GROUP="wazuh"
+if [[ -f /var/ossec/logs/alerts/alerts.json ]]; then
+    detected_group=$(stat -c '%G' /var/ossec/logs/alerts/alerts.json 2>/dev/null || true)
+    [[ -n "$detected_group" ]] && ALERTS_LOG_GROUP="$detected_group"
+fi
+if getent group "$ALERTS_LOG_GROUP" >/dev/null 2>&1; then
+    usermod -aG "$ALERTS_LOG_GROUP" "$SERVICE_USER"
+    ok "${SERVICE_USER} zur Gruppe ${ALERTS_LOG_GROUP} hinzugefügt (Lesezugriff auf Alert-Logs)"
+else
+    warn "Gruppe ${ALERTS_LOG_GROUP} nicht gefunden – Service kann ${WAZUH_ALERTS_LOG:-alerts.json} ggf. nicht lesen. Wazuh Manager installiert?"
+fi
+
+# Installationsverzeichnis (Code, venv, Daten) dem Service-User übertragen,
+# damit der laufende Prozess selbst keine root-Rechte mehr braucht. Auch bei
+# einer Neuinstallation/einem Update sicher erneut ausführbar (idempotent).
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
+ok "${INSTALL_DIR} gehört jetzt ${SERVICE_USER}:${SERVICE_USER}"
+
+# =============================================================================
+# Schritt 9: systemd Service
 # =============================================================================
 info "Systemd-Service einrichten …"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
@@ -293,7 +328,8 @@ Wants=wazuh-manager.service
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 analyzer.py
@@ -306,6 +342,15 @@ SyslogIdentifier=${SERVICE_NAME}
 # Ressourcen-Limits (schonend für LXC)
 MemoryLimit=256M
 CPUQuota=25%
+
+# Hardening: der Prozess läuft unprivilegiert (siehe Schritt 8), braucht
+# keine Privilegien-Eskalation und darf nur ins eigene data/-Verzeichnis
+# schreiben.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=${INSTALL_DIR}/data
 
 [Install]
 WantedBy=multi-user.target

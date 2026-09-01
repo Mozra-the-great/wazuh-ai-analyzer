@@ -5,6 +5,7 @@ Analysiert Wazuh-Alerts mit Google Gemini AI und zeigt sie im Web-Dashboard.
 Erstellt mithilfe von KI (Claude by Anthropic)
 """
 
+import html
 import json
 import os
 import sqlite3
@@ -19,6 +20,7 @@ from pathlib import Path
 import hashlib
 import hmac
 import secrets
+from urllib.parse import urlparse
 from flask import Flask, jsonify, request, abort, send_from_directory, session, redirect, url_for, make_response
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -59,6 +61,11 @@ LOGIN_MAX_ATTEMPTS   = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
 # be overwriting it before the request reaches this app, since the login
 # rate-limiter is keyed on the resulting request.remote_addr.
 TRUSTED_PROXY_HOPS   = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
+# Marks the session cookie Secure (HTTPS-only). Modern browsers treat
+# 127.0.0.1/localhost as a secure context, so this stays safe with the
+# documented SSH-tunnel default (LISTEN_HOST=127.0.0.1) - disable only if a
+# specific browser/proxy setup needs the cookie over plain HTTP.
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
 
 WATERMARK_FILE       = Path(DB_PATH).parent / "watermark.json"
 SESSION_KEY_FILE     = Path(DB_PATH).parent / "session.key"
@@ -82,6 +89,8 @@ if TRUSTED_PROXY_HOPS > 0:
     )
 else:
     log.info("TRUSTED_PROXY_HOPS=0 – ProxyFix disabled, request.remote_addr is the raw socket peer.")
+app.config["SESSION_COOKIE_SECURE"]   = SESSION_COOKIE_SECURE
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 def _load_or_create_session_key() -> bytes:
     """Persistent secret key for Flask sessions. Generated once, stored on disk."""
@@ -130,6 +139,20 @@ def _is_authenticated() -> bool:
             session.get("user") == DASHBOARD_USER and
             time.time() < session.get("expires_at", 0))
 
+def _safe_next_path(next_url: str) -> str:
+    """Only allow local, relative redirect targets (post-login `next` param).
+
+    A leading "/" alone isn't enough: "//evil.com" and "/\\evil.com" are
+    scheme-relative URLs that browsers resolve to an external host, and
+    urlparse().netloc catches those plus any URL that smuggles in a scheme.
+    """
+    if not next_url.startswith("/") or next_url.startswith("//") or next_url.startswith("/\\"):
+        return "/"
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return next_url
+
 # ─── Auth middleware ──────────────────────────────────────────────────────────
 @app.before_request
 def require_login():
@@ -176,9 +199,7 @@ def login_route():
                 session["expires_at"]    = time.time() + SESSION_LIFETIME
                 session.permanent        = True
                 log.info(f"Login erfolgreich: {username} von {ip}")
-                next_url = request.args.get("next", "/")
-                if not next_url.startswith("/"):
-                    next_url = "/"
+                next_url = _safe_next_path(request.args.get("next", "/"))
                 return redirect(next_url)
             else:
                 _record_failed(ip)
@@ -200,7 +221,7 @@ def logout_route():
 
 # ─── Login page HTML ──────────────────────────────────────────────────────────
 def _login_html(error: str = None, query_string: str = "") -> str:
-    next_param = f"?{query_string}" if query_string else ""
+    next_param = f"?{html.escape(query_string)}" if query_string else ""
     err_block  = (f'<div class="err">{error}</div>') if error else ""
     return f"""<!DOCTYPE html>
 <html lang="de">
@@ -737,10 +758,8 @@ def call_gemini(groups: list) -> tuple:
         return None, "error"
 
     prompt  = _PROMPT_TPL.format(infra=INFRA_CONTEXT, groups=json.dumps(groups, ensure_ascii=False, indent=2))
-    url     = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
+    url     = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": GEMINI_TEMPERATURE, "responseMimeType": "application/json"},
@@ -748,7 +767,7 @@ def call_gemini(groups: list) -> tuple:
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=90)
+        resp = requests.post(url, json=payload, headers=headers, timeout=90)
 
         # ── 429: Rate-Limit oder Tages-Quota ─────────────────────────────
         if resp.status_code == 429:
