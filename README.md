@@ -121,6 +121,7 @@ systemctl restart wazuh-ai-analyzer
 | `DASHBOARD_PASSWORD_HASH` | – | pbkdf2:sha256 Hash (kein Klartext!) |
 | `SESSION_LIFETIME` | `28800` | Session-Dauer in Sekunden (8 Stunden) |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Max. Fehlversuche vor 60s Sperre |
+| `TRUSTED_PROXY_HOPS` | `0` | Anzahl vertrauenswürdiger Reverse-Proxy-Hops vor der App. `0` = ProxyFix deaktiviert, `request.remote_addr` ist die rohe Socket-Peer-IP. Nur auf `1` setzen, wenn wirklich ein Reverse Proxy (z. B. Nginx, siehe unten) `X-Forwarded-For` korrekt überschreibt – sonst kann jeder Client die IP fürs Login-Rate-Limiting fälschen. |
 | `SESSION_COOKIE_SECURE` | `true` | Session-Cookie nur über HTTPS senden (`false` nur falls ein spezielles Setup den Cookie über reines HTTP benötigt) |
 
 ### Infra-Kontext Beispiele
@@ -156,7 +157,9 @@ systemctl restart wazuh-ai-analyzer
 
 ## Optional: Als Subdomain verfügbar machen
 
-Mit Nginx Proxy Manager oder direkt mit Nginx. Wichtig: `proxy_set_header X-Forwarded-For` setzen, damit das integrierte Brute-Force-Tracking die echte Client-IP sieht (ProxyFix ist bereits aktiviert):
+Mit Nginx Proxy Manager oder direkt mit Nginx. Wichtig:
+1. `proxy_set_header X-Forwarded-For` setzen, damit das integrierte Brute-Force-Tracking die echte Client-IP sieht.
+2. `TRUSTED_PROXY_HOPS=1` in der Konfiguration setzen, damit die App diesen Header auch tatsächlich auswertet (ProxyFix ist standardmäßig deaktiviert, siehe Sicherheitshinweis oben).
 
 ```nginx
 server {
