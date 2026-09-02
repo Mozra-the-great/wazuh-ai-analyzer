@@ -23,6 +23,7 @@ import secrets
 from urllib.parse import urlparse
 from flask import Flask, jsonify, request, abort, send_from_directory, session, redirect, url_for, make_response
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import NotFound
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ─── Konfiguration ───────────────────────────────────────────────────────────
@@ -1023,9 +1024,23 @@ def _finding_dict(r):
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def spa(path):
-    full = os.path.join(STATIC_DIR, path)
-    if path and os.path.exists(full):
-        return send_from_directory(STATIC_DIR, path)
+    """SPA catch-all: serve a real static file if there is one, else index.html.
+
+    The existence check is left to send_from_directory (which resolves the path
+    through Werkzeug's safe_join) rather than done up front with
+    os.path.exists(os.path.join(...)). os.path.join is plain string
+    concatenation - it happily resolves "../" segments, and discards its first
+    argument entirely when the second looks absolute - so the old pre-check ran
+    os.path.exists() on paths outside STATIC_DIR. safe_join then refused to
+    serve them, but *which branch was taken* still differed, turning this route
+    into a boolean "does this file exist on disk" oracle over arbitrary paths
+    for any authenticated user (#30).
+    """
+    if path:
+        try:
+            return send_from_directory(STATIC_DIR, path)
+        except NotFound:
+            pass
     return send_from_directory(STATIC_DIR, "index.html")
 
 # ─── Start ────────────────────────────────────────────────────────────────────
