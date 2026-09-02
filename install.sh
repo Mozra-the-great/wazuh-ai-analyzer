@@ -192,6 +192,10 @@ ok "System-Pakete installiert"
 info "Verzeichnisse anlegen …"
 mkdir -p "${INSTALL_DIR}/static"
 mkdir -p "${INSTALL_DIR}/data"
+# Das data-Verzeichnis enthaelt die Analyse-Datenbank (priorisierte Schwachstellen,
+# betroffene Hosts, Quell-IPs), das Watermark und den Flask-Session-Key. Nur der
+# Service-User darf da rein - nicht die Standard-Umask (0755) erben.
+chmod 700 "${INSTALL_DIR}/data"
 ok "Verzeichnisse: ${INSTALL_DIR}"
 
 # =============================================================================
@@ -314,7 +318,12 @@ fi
 # damit der laufende Prozess selbst keine root-Rechte mehr braucht. Auch bei
 # einer Neuinstallation/einem Update sicher erneut ausführbar (idempotent).
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
-ok "${INSTALL_DIR} gehört jetzt ${SERVICE_USER}:${SERVICE_USER}"
+# Bestehende Installationen: Rechte im data-Verzeichnis nachziehen, damit eine
+# vor diesem Fix mit 0644 angelegte analyses.db/watermark.json nicht
+# world-readable bleibt.
+chmod 700 "${INSTALL_DIR}/data"
+find "${INSTALL_DIR}/data" -maxdepth 1 -type f -exec chmod 600 {} +
+ok "${INSTALL_DIR} gehört jetzt ${SERVICE_USER}:${SERVICE_USER} (data/ nur für diesen User lesbar)"
 
 # =============================================================================
 # Schritt 9: systemd Service
