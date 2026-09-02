@@ -413,7 +413,10 @@ fi
 echo -e "  👤  Login:      ${CYAN}${DASHBOARD_USER}${NC} / (Passwort wie eingegeben)"
 echo -e "  🔐  Auth:       ${GREEN}Benutzername + Passwort (pbkdf2:sha256)${NC}"
 echo ""
-echo -e "  🔑  Gemini Key: ${CYAN}${GEMINI_KEY:0:16}…${NC}"
+# Kein Teil des Keys wird ausgegeben (#32): Terminal-Scrollback, aufgezeichnete
+# Install-Sessions und CI-Logs überleben deutlich länger, als Betreiber erwarten,
+# und ein Präfix verkleinert den Suchraum bzw. verrät, welcher Key im Einsatz ist.
+echo -e "  🔑  Gemini Key: ${GREEN}konfiguriert${NC} (${#GEMINI_KEY} Zeichen)"
 echo -e "  📊  Min-Level:  Wazuh-Alerts ≥ ${MIN_LEVEL}"
 echo -e "  📦  Batch:      ${BATCH_MAX} Alerts oder ${BATCH_TIMEOUT}s"
 echo ""
