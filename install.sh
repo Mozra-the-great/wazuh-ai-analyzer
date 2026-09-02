@@ -7,7 +7,7 @@
 # Erstellt mithilfe von KI (Claude by Anthropic)
 #
 # Ausführen als root:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/wazuh-ai-analyzer/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/v1.0.0/install.sh)
 # =============================================================================
 set -uo pipefail
 
@@ -23,14 +23,52 @@ INSTALL_DIR="/opt/wazuh-ai-analyzer"
 SERVICE_NAME="wazuh-ai-analyzer"
 SERVICE_USER="wazuh-ai-analyzer"
 ENV_FILE="/etc/wazuh-ai-analyzer.env"
-# Set this to your own fork URL, or leave as-is to use the default repo:
-REPO_URL="${WAZUH_AI_REPO:-https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main}"
+
+# Herkunft der App-Dateien.
+#
+# WAZUH_AI_REF: gepinnter Tag statt des floating "main"-Branches. Ein floating
+# Branch ist genau der Angriffsvektor aus #4: wer den Branch (oder den GitHub-
+# Account dahinter) kompromittiert, bekommt code execution als root auf jedem
+# Server, der gerade installiert/updatet. Der Default-Wert hier wird von
+# scripts/release.sh bei jedem Release aktualisiert.
+WAZUH_AI_REF="${WAZUH_AI_REF:-v1.0.0}"
+REPO_BASE="https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer"
+
+# Mirror/Fork-Override. Nur https:// wird akzeptiert; ein anderes Schema
+# (http://, file://, …) würde die Integritätsprüfung unten wertlos machen,
+# da schon der Download selbst unauthentifiziert wäre.
+if [[ -n "${WAZUH_AI_REPO:-}" ]]; then
+    [[ "$WAZUH_AI_REPO" =~ ^https:// ]] || error "WAZUH_AI_REPO muss mit https:// beginnen"
+    warn "WAZUH_AI_REPO gesetzt – lade App-Dateien von einem FREMDEN Mirror: ${WAZUH_AI_REPO}"
+    warn "Die Checksummen-Prüfung unten schützt hier nur gegen Übertragungsfehler/"
+    warn "abgebrochene Downloads, NICHT gegen einen bösartigen Mirror – der könnte"
+    warn "checksums.sha256 gleich mit manipulieren."
+fi
+REPO_URL="${WAZUH_AI_REPO:-${REPO_BASE}/${WAZUH_AI_REF}}"
+
 DEFAULT_PORT=8765
 
 download() {
     local src="$1" dst="$2"
     if ! curl -fsSL "${REPO_URL}/${src}" -o "$dst"; then
         error "Download fehlgeschlagen: ${src}"
+    fi
+}
+
+# Prüft eine bereits heruntergeladene Datei gegen checksums.sha256 (Format wie
+# von sha256sum erzeugt: "<hash>  <pfad>"). Bricht ab, wenn der Eintrag FEHLT
+# (nicht nur wenn er falsch ist) – ein fehlender Eintrag darf kein stiller
+# Bypass der Prüfung sein.
+verify_checksum() {
+    local src="$1" dst="$2" checksums_file="$3"
+    local expected
+    expected=$(awk -v f="$src" '$2 == f { print $1; found=1 } END { if (!found) exit 1 }' "$checksums_file") \
+        || error "Kein Checksum-Eintrag für '${src}' in checksums.sha256 gefunden – Abbruch (mögliches Downgrade/manipulierter Datei-Katalog)"
+    local actual
+    actual=$(sha256sum "$dst" | awk '{print $1}')
+    if [[ "$expected" != "$actual" ]]; then
+        rm -f "$dst"
+        error "Integritätsprüfung fehlgeschlagen für '${src}': erwartet ${expected}, erhalten ${actual}. Datei gelöscht. Möglicher MITM-Angriff oder kompromittierter Mirror – Installation abgebrochen."
     fi
 }
 
@@ -231,8 +269,28 @@ ok "Passwort-Hash erstellt (Klartext entfernt)"
 # =============================================================================
 info "Dateien herunterladen …"
 
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" == "1" ]]; then
+    warn "WAZUH_AI_ALLOW_UNVERIFIED=1 gesetzt – Integritätsprüfung wird ÜBERSPRUNGEN."
+    warn "Heruntergeladener Code wird UNGEPRÜFT als root-vorbereitete Datei für den Service übernommen."
+fi
+
+CHECKSUMS_FILE=$(mktemp)
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+    if ! curl -fsSL "${REPO_URL}/checksums.sha256" -o "$CHECKSUMS_FILE"; then
+        rm -f "$CHECKSUMS_FILE"
+        error "Download von checksums.sha256 fehlgeschlagen – Integritätsprüfung nicht möglich. Abbruch (Bypass nur bewusst via WAZUH_AI_ALLOW_UNVERIFIED=1)."
+    fi
+fi
+
 download "analyzer.py"          "${INSTALL_DIR}/analyzer.py"
 download "static/index.html"    "${INSTALL_DIR}/static/index.html"
+
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+    verify_checksum "analyzer.py"       "${INSTALL_DIR}/analyzer.py"       "$CHECKSUMS_FILE"
+    verify_checksum "static/index.html" "${INSTALL_DIR}/static/index.html" "$CHECKSUMS_FILE"
+    ok "Integritätsprüfung (SHA-256) erfolgreich"
+fi
+rm -f "$CHECKSUMS_FILE"
 
 ok "Dateien heruntergeladen"
 
@@ -437,6 +495,6 @@ echo -e "  ${YELLOW}journalctl -u ${SERVICE_NAME} -f${NC}"
 echo -e "  ${YELLOW}nano ${ENV_FILE}${NC}  (Konfiguration ändern)"
 echo ""
 echo -e "  Update:"
-echo -e "  ${YELLOW}bash <(curl -fsSL \$REPO_URL/install.sh)${NC}"
+echo -e "  ${YELLOW}bash <(curl -fsSL ${REPO_URL}/install.sh)${NC}"
 echo "═══════════════════════════════════════════════════════"
 echo ""
