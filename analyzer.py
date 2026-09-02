@@ -69,6 +69,12 @@ SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").strip().
 
 WATERMARK_FILE       = Path(DB_PATH).parent / "watermark.json"
 SESSION_KEY_FILE     = Path(DB_PATH).parent / "session.key"
+# The data directory holds the analysis database (prioritised vulnerabilities,
+# affected hostnames, source IPs), the alert watermark and the Flask session
+# key. None of it is meant for other local accounts, so it is kept
+# owner-only instead of inheriting the process umask (usually 0755/0644).
+DATA_DIR_MODE        = 0o700
+DATA_FILE_MODE       = 0o600
 # ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -77,6 +83,15 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger("wazuh-ai")
+
+def _restrict(path: Path, mode: int) -> None:
+    """Best-effort chmod on an existing path. A filesystem without POSIX modes
+    must not take the whole service down, so failures are logged, not raised."""
+    try:
+        if path.exists():
+            path.chmod(mode)
+    except OSError as exc:
+        log.warning("Konnte Rechte fuer %s nicht auf %o setzen: %s", path, mode, exc)
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 # Only trust X-Forwarded-For/-Proto/-Host when a trusted reverse proxy is
@@ -96,13 +111,18 @@ def _load_or_create_session_key() -> bytes:
     """Persistent secret key for Flask sessions. Generated once, stored on disk."""
     if SESSION_KEY_FILE.exists():
         try:
-            return SESSION_KEY_FILE.read_bytes()
+            key = SESSION_KEY_FILE.read_bytes()
+            # Heal a key file left world-readable by an install predating the
+            # explicit mode handling below.
+            _restrict(SESSION_KEY_FILE, DATA_FILE_MODE)
+            return key
         except Exception:
             pass
     key = secrets.token_bytes(64)
-    SESSION_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_KEY_FILE.parent.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
+    _restrict(SESSION_KEY_FILE.parent, DATA_DIR_MODE)
     SESSION_KEY_FILE.write_bytes(key)
-    SESSION_KEY_FILE.chmod(0o600)
+    SESSION_KEY_FILE.chmod(DATA_FILE_MODE)
     return key
 
 # Secret key placeholder – replaced at startup after init_db()
@@ -406,7 +426,11 @@ class _db:
         self.conn.close()
 
 def init_db():
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    data_dir = Path(DB_PATH).parent
+    # mode= is only honoured when mkdir actually creates the directory, so an
+    # existing (world-readable) data dir from an older install is fixed too.
+    data_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
+    _restrict(data_dir, DATA_DIR_MODE)
     conn = get_db_conn()
     try:
         conn.executescript("""
@@ -441,6 +465,10 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+    # SQLite creates the database (and its WAL sidecars) with the process umask,
+    # typically 0644 - the analysis data must not be readable by other local users.
+    for suffix in ("", "-wal", "-shm"):
+        _restrict(Path(f"{DB_PATH}{suffix}"), DATA_FILE_MODE)
     log.info("Datenbank initialisiert (WAL-Modus aktiv)")
 
 # ─── Watermark ────────────────────────────────────────────────────────────────
@@ -453,7 +481,12 @@ def load_watermark() -> dict:
     return {}
 
 def save_watermark(data: dict):
-    WATERMARK_FILE.write_text(json.dumps(data, indent=2))
+    # os.open() applies the mode only when the file is created, so an existing
+    # file from an earlier install still needs the explicit _restrict() below.
+    fd = os.open(WATERMARK_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, DATA_FILE_MODE)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2))
+    _restrict(WATERMARK_FILE, DATA_FILE_MODE)
 
 # ─── Runtime-Statistiken ──────────────────────────────────────────────────────
 stats_lock = threading.Lock()

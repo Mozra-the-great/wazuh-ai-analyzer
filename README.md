@@ -66,7 +66,7 @@ Bei Quota-Erschöpfung (429):
 ## Installation
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/v1.0.0/install.sh)
 ```
 
 Der Installer fragt interaktiv nach:
@@ -232,8 +232,33 @@ systemctl start wazuh-ai-analyzer
 Denselben Installer-Befehl erneut ausführen – bestehende Datenbank, Session-Key und Konfiguration bleiben erhalten:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mozra-the-great/wazuh-ai-analyzer/v1.0.0/install.sh)
 ```
+
+---
+
+## Integritätsprüfung des Installers
+
+Der Installer lädt `analyzer.py` und `static/index.html` nicht mehr vom
+floating `main`-Branch, sondern von einem gepinnten Release-Tag (aktuell
+`v1.0.0`), und prüft beide Dateien nach dem Download gegen SHA-256-Hashes aus
+`checksums.sha256` (ebenfalls vom selben Tag geladen). Weicht ein Hash ab oder
+fehlt ein Eintrag komplett, bricht die Installation ab und löscht die
+betroffene Datei – das schützt gegen einen kompromittierten Mirror, einen
+manipulierten Download oder einen unbemerkt geänderten `main`-Branch.
+
+Umgebungsvariablen dafür:
+
+| Variable | Zweck |
+|---|---|
+| `WAZUH_AI_REF` | Anderer Tag statt des Default-Releases (z. B. `WAZUH_AI_REF=v1.1.0`) |
+| `WAZUH_AI_REPO` | Eigener Fork/Mirror (muss mit `https://` beginnen). Die Prüfung bleibt aktiv, schützt dann aber nur gegen Übertragungsfehler – ein bösartiger Mirror kann `checksums.sha256` gleich mit manipulieren |
+| `WAZUH_AI_ALLOW_UNVERIFIED=1` | Prüfung bewusst überspringen (nicht empfohlen, nur für Debugging) |
+
+Ein neuer Release-Tag wird mit `scripts/release.sh <version>` vorbereitet:
+das Skript regeneriert `checksums.sha256`, setzt den `WAZUH_AI_REF`-Default in
+`install.sh` und zeigt die nötigen `git commit`/`git tag`/`git push`-Schritte
+an.
 
 ---
 
