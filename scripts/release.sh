@@ -2,9 +2,9 @@
 # =============================================================================
 # Wazuh AI Analyzer – Release-Helfer
 #
-# Regeneriert checksums.sha256 für analyzer.py und static/index.html, setzt
-# den Default-Wert von WAZUH_AI_REF in install.sh auf die übergebene Version
-# und zeigt an, was noch zu tun ist.
+# Regeneriert checksums.sha256 für analyzer.py, static/index.html und
+# requirements.txt, setzt den Default-Wert von WAZUH_AI_REF in install.sh auf
+# die übergebene Version und zeigt an, was noch zu tun ist.
 #
 # Wichtig: der Git-Tag wird ERST NACH diesem Skript (und einem Commit der
 # Änderungen) gesetzt – der Tag zeigt also auf den Commit, der bereits den
@@ -32,12 +32,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 cd "$REPO_ROOT"
 
-for f in analyzer.py static/index.html; do
+for f in analyzer.py static/index.html requirements.txt; do
     [[ -f "$f" ]] || { echo "Fehler: '$f' nicht gefunden im Repo-Root" >&2; exit 1; }
 done
 
 echo "→ Regeneriere checksums.sha256 …"
-sha256sum analyzer.py static/index.html > checksums.sha256
+sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256
 echo "  $(cat checksums.sha256 | tr '\n' ' ')"
 
 echo "→ Setze WAZUH_AI_REF-Default in install.sh auf ${VERSION} …"

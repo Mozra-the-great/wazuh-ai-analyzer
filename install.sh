@@ -237,12 +237,36 @@ chmod 700 "${INSTALL_DIR}/data"
 ok "Verzeichnisse: ${INSTALL_DIR}"
 
 # =============================================================================
+# Schritt 4b: Integritätskatalog holen
+# =============================================================================
+# Muss VOR Schritt 5 passieren: requirements.txt wird dort heruntergeladen und
+# direkt an pip als root übergeben, ist also genauso ein Code-Execution-Vektor
+# wie analyzer.py und gehört ebenso geprüft.
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" == "1" ]]; then
+    warn "WAZUH_AI_ALLOW_UNVERIFIED=1 gesetzt – Integritätsprüfung wird ÜBERSPRUNGEN."
+    warn "Heruntergeladener Code wird UNGEPRÜFT als root-vorbereitete Datei für den Service übernommen."
+fi
+
+CHECKSUMS_FILE=$(mktemp)
+trap 'rm -f "$CHECKSUMS_FILE"' EXIT
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+    info "Checksummen-Katalog laden (${WAZUH_AI_REF}) …"
+    if ! curl -fsSL "${REPO_URL}/checksums.sha256" -o "$CHECKSUMS_FILE"; then
+        error "Download von checksums.sha256 fehlgeschlagen – Integritätsprüfung nicht möglich. Abbruch (Bypass nur bewusst via WAZUH_AI_ALLOW_UNVERIFIED=1)."
+    fi
+    ok "Checksummen-Katalog geladen"
+fi
+
+# =============================================================================
 # Schritt 5: Python venv + Abhängigkeiten
 # =============================================================================
 info "Python venv einrichten …"
 python3 -m venv "${INSTALL_DIR}/venv" || error "venv-Erstellung fehlgeschlagen – python3-venv installiert?"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 download "requirements.txt" "${INSTALL_DIR}/requirements.txt"
+if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+    verify_checksum "requirements.txt" "${INSTALL_DIR}/requirements.txt" "$CHECKSUMS_FILE"
+fi
 "${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt"
 ok "Python-Pakete: $(tr '\n' ' ' < "${INSTALL_DIR}/requirements.txt")"
 
@@ -269,19 +293,6 @@ ok "Passwort-Hash erstellt (Klartext entfernt)"
 # =============================================================================
 info "Dateien herunterladen …"
 
-if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" == "1" ]]; then
-    warn "WAZUH_AI_ALLOW_UNVERIFIED=1 gesetzt – Integritätsprüfung wird ÜBERSPRUNGEN."
-    warn "Heruntergeladener Code wird UNGEPRÜFT als root-vorbereitete Datei für den Service übernommen."
-fi
-
-CHECKSUMS_FILE=$(mktemp)
-if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
-    if ! curl -fsSL "${REPO_URL}/checksums.sha256" -o "$CHECKSUMS_FILE"; then
-        rm -f "$CHECKSUMS_FILE"
-        error "Download von checksums.sha256 fehlgeschlagen – Integritätsprüfung nicht möglich. Abbruch (Bypass nur bewusst via WAZUH_AI_ALLOW_UNVERIFIED=1)."
-    fi
-fi
-
 download "analyzer.py"          "${INSTALL_DIR}/analyzer.py"
 download "static/index.html"    "${INSTALL_DIR}/static/index.html"
 
@@ -290,7 +301,6 @@ if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
     verify_checksum "static/index.html" "${INSTALL_DIR}/static/index.html" "$CHECKSUMS_FILE"
     ok "Integritätsprüfung (SHA-256) erfolgreich"
 fi
-rm -f "$CHECKSUMS_FILE"
 
 ok "Dateien heruntergeladen"
 
