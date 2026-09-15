@@ -108,6 +108,17 @@ else:
 app.config["SESSION_COOKIE_SECURE"]   = SESSION_COOKIE_SECURE
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
+@app.after_request
+def _set_security_headers(response):
+    """SameSite=Lax on the session cookie doesn't stop the login form itself
+    from being framed on another origin (clickjacking), so deny framing
+    explicitly and block MIME-sniffing on every response."""
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
 def _load_or_create_session_key() -> bytes:
     """Persistent secret key for Flask sessions. Generated once, stored on disk."""
     if SESSION_KEY_FILE.exists():
@@ -137,8 +148,18 @@ def _is_rate_limited(ip: str) -> tuple:
     """Returns (limited: bool, retry_in: int seconds)."""
     now = time.time()
     with _attempts_lock:
+        # Sweep every IP's list here, not just the caller's. An attacker
+        # rotating source addresses (trivial over IPv6) never revisits the
+        # same IP, so pruning only the current key would leave a stale dict
+        # entry behind for every address it ever used, growing the dict
+        # without bound over the process lifetime.
+        for stale_ip in [k for k, v in _login_attempts.items()
+                          if not any(now - t < 60 for t in v)]:
+            del _login_attempts[stale_ip]
+
         attempts = [t for t in _login_attempts.get(ip, []) if now - t < 60]
-        _login_attempts[ip] = attempts
+        if attempts:
+            _login_attempts[ip] = attempts
         if len(attempts) >= LOGIN_MAX_ATTEMPTS:
             retry_in = max(0, int(60 - (now - attempts[0])))
             return True, retry_in
