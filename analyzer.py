@@ -14,6 +14,7 @@ import time
 import requests
 import logging
 import glob
+import re
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -84,6 +85,28 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 log = logging.getLogger("wazuh-ai")
+
+
+class _RedactSecrets(logging.Filter):
+    """Mask the Gemini key before a record is emitted (defense in depth).
+
+    Sits on the root handlers, so it also covers library loggers (urllib3,
+    werkzeug) whose messages can embed a full request URL or header dump."""
+    _pattern = re.compile(
+        r"""(key=|x-goog-api-key['"]?\s*[:=]\s*['"]?)[^&\s'"]+""", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        redacted = self._pattern.sub(r"\1***", msg)
+        if GEMINI_API_KEY:
+            redacted = redacted.replace(GEMINI_API_KEY, "***")
+        if redacted != msg:
+            record.msg, record.args = redacted, None
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_RedactSecrets())
 
 def _restrict(path: Path, mode: int) -> None:
     """Best-effort chmod on an existing path. A filesystem without POSIX modes
