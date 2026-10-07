@@ -45,3 +45,13 @@ def az(tmp_path, monkeypatch):
     monkeypatch.setattr(analyzer, "HISTORY_PAUSE", 0)
     analyzer.init_db()
     return analyzer
+
+
+@pytest.fixture
+def client(az, monkeypatch):
+    """Flask test client with a valid dashboard session."""
+    monkeypatch.setattr(az, "DASHBOARD_PASSWORD_HASH", "x")
+    c = az.app.test_client()
+    with c.session_transaction() as sess:
+        sess.update(authenticated=True, user=az.DASHBOARD_USER, expires_at=az._now() + 600)
+    return c
