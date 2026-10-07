@@ -40,6 +40,12 @@ DB_PATH         = os.environ.get("DB_PATH", "/opt/wazuh-ai-analyzer/data/analyse
 STATIC_DIR      = os.environ.get("STATIC_DIR", "/opt/wazuh-ai-analyzer/static")
 BATCH_MAX       = int(os.environ.get("BATCH_MAX", "25"))
 BATCH_TIMEOUT   = int(os.environ.get("BATCH_TIMEOUT", "300"))
+# Quiet-time window: while the buffer holds only alerts below URGENT_LEVEL, wait up
+# to this long (never less than BATCH_TIMEOUT) before sending a part-filled batch.
+# Defaults keep the old behaviour (one request per BATCH_TIMEOUT at most); raising
+# it turns many tiny batches into few fuller ones and saves free-tier requests.
+BATCH_TIMEOUT_QUIET = max(int(os.environ.get("BATCH_TIMEOUT_QUIET", str(BATCH_TIMEOUT))), BATCH_TIMEOUT)
+URGENT_LEVEL    = int(os.environ.get("URGENT_LEVEL", "10"))
 MIN_LEVEL       = int(os.environ.get("MIN_LEVEL", "5"))
 PORT            = int(os.environ.get("PORT", "8765"))
 GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
@@ -1184,6 +1190,14 @@ class _LiveCursor:
 
 live_cursor = _LiveCursor()
 
+def _flush_timeout(buffered: list) -> int:
+    """How long a part-filled live batch may wait: BATCH_TIMEOUT if any buffered
+    alert is urgent (level >= URGENT_LEVEL), else the longer quiet-time window."""
+    for alert in buffered:
+        if _as_int(_as_dict(alert.get("rule")).get("level")) >= URGENT_LEVEL:
+            return BATCH_TIMEOUT
+    return BATCH_TIMEOUT_QUIET
+
 def _flush(source: str = "live"):
     global last_flush_ts
     if not alert_buffer:
@@ -1553,7 +1567,7 @@ def tail_alerts(stop: threading.Event = None):
             stop.wait(0.3)
             with buffer_lock:
                 if alert_buffer:
-                    if (time.time() - last_flush_ts) >= BATCH_TIMEOUT:
+                    if (time.time() - last_flush_ts) >= _flush_timeout(alert_buffer):
                         log.info(f"Timeout-Flush: {len(alert_buffer)} Alerts")
                         _flush(source="live")
                 elif live_cursor.dirty() and time.time() - live_cursor.last_commit >= WATERMARK_IDLE_COMMIT:
@@ -2014,6 +2028,8 @@ def api_stats():
         "buffered_alerts":  buffered,
         "batch_max":        BATCH_MAX,
         "batch_timeout":    BATCH_TIMEOUT,
+        "batch_timeout_quiet": BATCH_TIMEOUT_QUIET,
+        "urgent_level":     URGENT_LEVEL,
         "runtime":          s,
         "gemini_ok":        bool(GEMINI_API_KEY),
         "quota":            quota.as_dict(),
@@ -2153,7 +2169,7 @@ if __name__ == "__main__":
     log.info(f"Dashboard:     http://{LISTEN_HOST}:{PORT}/login")
     bind_note = "(localhost only – use SSH tunnel or reverse proxy)" if LISTEN_HOST == "127.0.0.1" else "(EXPOSED – ensure only accessible via trusted network/proxy)"
     log.info(f"Bind:          {LISTEN_HOST} {bind_note}")
-    log.info(f"Batch:         {BATCH_MAX} Alerts / {BATCH_TIMEOUT}s Timeout | Min-Level: {MIN_LEVEL}")
+    log.info(f"Batch:         {BATCH_MAX} Alerts / {BATCH_TIMEOUT}s Timeout ({BATCH_TIMEOUT_QUIET}s unter Level {URGENT_LEVEL}) | Min-Level: {MIN_LEVEL}")
     log.info(f"History:       {HISTORY_BATCH} Alerts/Batch | {HISTORY_PAUSE}s Pause")
     log.info(f"Infra-Kontext: {INFRA_CONTEXT}")
 
