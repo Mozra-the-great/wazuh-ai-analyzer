@@ -489,3 +489,135 @@ def test_live_watcher_commits_position_only_after_the_batch_is_stored(az, seen, 
     start(az)
     drain(az)
     assert seen.flat() == ev(2, 3)
+
+
+# ── review follow-ups ─────────────────────────────────────────────────────────
+
+def test_stopped_on_an_empty_file_then_a_full_day_rotated_away(az, seen):
+    """Cursor without a first-line hash + rotation during downtime: the archive
+    of the day we never read must not be skipped."""
+    log = Path(az.ALERTS_LOG)
+    write(log, b"")                                        # just after midnight: empty alerts.json
+    start(az)
+    day = datetime.now().date()
+    rotate(az, day, lines(1, 2, 3), lines(4))              # that day's alerts got archived meanwhile
+    restart(az)
+    start(az)
+    drain(az)
+    assert seen.flat() == ev(1, 2, 3, 4)
+
+
+def test_empty_cursor_and_same_inode_stays_on_that_file(az, seen):
+    log = Path(az.ALERTS_LOG)
+    write(log, b"")
+    start(az)
+    write(log, lines(1, 2), "ab")
+    restart(az)
+    start(az)
+    drain(az)
+    assert seen.flat() == ev(1, 2)
+
+
+def test_broken_hard_link_copy_of_the_live_file_is_not_planned_twice(az, seen):
+    log = Path(az.ALERTS_LOG)
+    write(log, lines(1, 2))
+    start(az)
+    drain(az)
+    day = datetime.now().date()
+    # midnight: yesterday archived, today's alerts.json restored as a *copy* of the dated file
+    new_content = lines(3, 4)
+    rotate(az, day, log.read_bytes(), new_content)
+    write(archive_path(az, day + timedelta(days=1), ".json"), new_content)
+    restart(az)
+    start(az)
+    drain(az)
+    assert seen.flat() == ev(1, 2, 3, 4)
+
+
+def test_plan_ready_and_history_done_only_after_planning(az, seen):
+    assert az.run_backlog_once() is False
+    assert az._stats["history_done"] is False              # nothing planned yet
+    write(Path(az.ALERTS_LOG), lines(1))
+    start(az)
+    drain(az)
+    assert az.plan_ready.is_set() and az._stats["history_done"] is True
+
+
+def test_watermark_save_failure_does_not_abort_the_segment(az, seen, monkeypatch):
+    monkeypatch.setattr(az, "HISTORY_BATCH", 2)
+    write(Path(az.ALERTS_LOG), lines(1, 2, 3, 4))
+    start(az)
+    real = az.watermark.advance_segment
+    calls = []
+
+    def flaky(seg_id, offset):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("No space left on device")
+        return real(seg_id, offset)
+
+    monkeypatch.setattr(az.watermark, "advance_segment", flaky)
+    drain(az)
+    assert seen.flat() == ev(1, 2, 3, 4)
+    assert az.watermark.first_segment() is None
+
+
+def test_supervisor_restarts_a_crashed_live_watcher(az, monkeypatch):
+    runs = []
+    stop = threading.Event()
+
+    def flaky_tail(ev_stop):
+        runs.append(1)
+        if len(runs) == 1:
+            raise RuntimeError("boom")
+
+    class FastStop(threading.Event):
+        def wait(self, timeout=None):
+            return super().wait(0.01)
+
+    monkeypatch.setattr(az, "tail_alerts", flaky_tail)
+    az.live_watcher(FastStop())
+    assert len(runs) == 2
+
+
+@posix_only
+def test_live_watcher_ignores_a_relinked_or_copied_alerts_json(az, seen, monkeypatch):
+    """alerts.json vanishing for a moment / being replaced by an identical copy
+    must not make the watcher re-read the whole day."""
+    monkeypatch.setattr(az, "BATCH_MAX", 2)
+    monkeypatch.setattr(az, "BATCH_TIMEOUT", 1)
+    monkeypatch.setattr(az, "WATERMARK_IDLE_COMMIT", 0)
+    log = Path(az.ALERTS_LOG)
+    write(log, lines(1, 2, 3))
+    stop = threading.Event()
+    t = threading.Thread(target=az.tail_alerts, args=(stop,), daemon=True)
+    t.start()
+    try:
+        assert az.plan_ready.wait(10)
+        drain(az)
+        assert seen.flat() == ev(1, 2, 3)
+
+        # 1) same inode, path unlinked and linked back
+        tmp = log.with_name("elsewhere.json")
+        os.link(log, tmp)
+        os.unlink(log)
+        time.sleep(0.8)
+        os.link(tmp, log)
+        with open(log, "ab") as fh:
+            fh.write(lines(4))
+        assert wait_for(lambda: len(seen.flat()) == 4)
+
+        # 2) new inode, identical content
+        data = log.read_bytes()
+        replacement = log.with_name("copy.json")
+        replacement.write_bytes(data)
+        os.replace(replacement, log)
+        time.sleep(0.8)
+        with open(log, "ab") as fh:
+            fh.write(lines(5))
+        assert wait_for(lambda: len(seen.flat()) == 5)
+        time.sleep(1.5)
+        assert seen.flat() == ev(1, 2, 3, 4, 5)
+    finally:
+        stop.set()
+        t.join(10)
