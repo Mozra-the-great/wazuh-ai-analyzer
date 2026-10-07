@@ -8,6 +8,7 @@ Erstellt mithilfe von KI (Claude by Anthropic)
 import html
 import json
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ import requests
 import logging
 import glob
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -41,6 +43,29 @@ HISTORY_BATCH   = int(os.environ.get("HISTORY_BATCH", "50"))
 HISTORY_PAUSE   = float(os.environ.get("HISTORY_PAUSE", "8.0"))
 # Temperature for Gemini responses (0.0–1.0). Lower = more deterministic.
 GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.15"))
+
+# ── Retry behaviour (#43) ─────────────────────────────────────────────────────
+# Transient failures (HTTP 5xx/408, timeouts, connection errors) and Gemini
+# quota errors (429) park the batch as status='pending' in the database; the
+# retry worker picks it up again once its next_attempt is due. Delays grow
+# exponentially from RETRY_BASE_DELAY to RETRY_MAX_DELAY (seconds, with jitter).
+RETRY_BASE_DELAY       = float(os.environ.get("RETRY_BASE_DELAY", "60"))
+RETRY_MAX_DELAY        = float(os.environ.get("RETRY_MAX_DELAY", "3600"))
+# A batch that keeps failing for non-quota reasons for this long becomes
+# status='error'. Quota waits never count - those batches just wait for reset.
+RETRY_MAX_AGE_HOURS    = float(os.environ.get("RETRY_MAX_AGE_HOURS", "72"))
+# Unparseable / empty Gemini answers are not an outage - give up after this many.
+RETRY_BAD_RESPONSE_MAX = int(os.environ.get("RETRY_BAD_RESPONSE_MAX", "3"))
+# Retry worker: poll interval when idle, pause between two retried batches
+# (keeps the drain of a large backlog well below Gemini's per-minute limit).
+RETRY_POLL             = float(os.environ.get("RETRY_POLL", "30"))
+RETRY_PACE             = float(os.environ.get("RETRY_PACE", "10"))
+# 'analyzing' rows nobody is working on for this long are re-queued (the
+# request timeout is 90s, so 15 minutes means the worker thread is gone).
+STALE_ANALYZING_SECONDS = float(os.environ.get("STALE_ANALYZING_SECONDS", "900"))
+# Concurrent Gemini requests. The upstream backoff is only effective if a burst
+# of live batches cannot all be in flight before the first failure closes it.
+GEMINI_CONCURRENCY     = max(1, int(os.environ.get("GEMINI_CONCURRENCY", "2")))
 # Describe your infrastructure so Gemini can give context-aware recommendations.
 # Example: "Proxmox homelab with LXC containers, Oracle Cloud VPS, Tailscale VPN, fail2ban"
 INFRA_CONTEXT   = os.environ.get("INFRA_CONTEXT", "a self-hosted Linux server environment")
@@ -95,11 +120,17 @@ class _RedactSecrets(logging.Filter):
     _pattern = re.compile(
         r"""(key=|x-goog-api-key['"]?\s*[:=]\s*['"]?)[^&\s'"]+""", re.IGNORECASE)
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        redacted = self._pattern.sub(r"\1***", msg)
+    @classmethod
+    def scrub(cls, text: str) -> str:
+        """Return text with the key parameter / header value / literal key masked."""
+        redacted = cls._pattern.sub(r"\1***", text)
         if GEMINI_API_KEY:
             redacted = redacted.replace(GEMINI_API_KEY, "***")
+        return redacted
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        redacted = self.scrub(msg)
         if redacted != msg:
             record.msg, record.args = redacted, None
         return True
@@ -404,6 +435,13 @@ class QuotaState:
                 return True
             return time.time() >= (self.retry_at or 0)
 
+    def wait_seconds(self) -> float:
+        """Seconds until the quota backoff allows the next request (0 = now)."""
+        with self._lock:
+            if not self.exhausted:
+                return 0.0
+            return max(0.0, (self.retry_at or 0) - time.time())
+
     def as_dict(self) -> dict:
         with self._lock:
             return {
@@ -420,30 +458,239 @@ class QuotaState:
 
 quota = QuotaState()
 
-# ─── Retry-Queue ──────────────────────────────────────────────────────────────
-retry_queue      = []
-retry_queue_lock = threading.Lock()
+# ─── Retry-Steuerung ──────────────────────────────────────────────────────────
+def _now() -> float:
+    return time.time()
 
-def enqueue_retry(batch_id: int, groups: list, source: str = "live"):
-    with retry_queue_lock:
-        retry_queue.append((batch_id, groups, source))
-    log.info(f"Batch {batch_id} in Retry-Queue ({len(retry_queue)} ausstehend)")
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+
+def _parse_iso(value) -> float:
+    """ISO timestamp -> epoch seconds; 0.0 for anything unparseable."""
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff with jitter: RETRY_BASE_DELAY * 2**(attempt-1),
+    never more than RETRY_MAX_DELAY."""
+    exponent = max(0, min(attempt, 32) - 1)
+    delay    = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * (2 ** exponent))
+    return min(RETRY_MAX_DELAY, delay * random.uniform(0.8, 1.2))
+
+@dataclass(frozen=True)
+class GeminiFailure:
+    """Why a Gemini call produced no usable result.
+
+    kind: 'quota'        HTTP 429 - wait for the quota backoff, never expires
+          'transient'    5xx/408, timeout, connection error - retry with backoff
+          'config'       401/403/404, missing key - retry slowly: the operator
+                         can fix the key/model and the parked batches survive
+          'bad_response' unparseable / empty answer - a few retries only
+          'permanent'    any other 4xx - retrying the same payload cannot help"""
+    kind:        str
+    message:     str
+    retry_after: float = 0.0
+
+class UpstreamState:
+    """Shared backoff for transient Gemini/network failures.
+
+    Per-batch backoff alone is not enough: after a long outage every parked
+    batch would probe the API on its own schedule, which on a 500 requests/day
+    free tier burns quota while Gemini is still down. This gate closes for
+    everybody after a failure and only grows while failures keep coming."""
+    def __init__(self):
+        self._lock                = threading.Lock()
+        self.consecutive_failures = 0
+        self.next_ok_at           = 0.0
+        self.last_error           = ""
+
+    def mark_failure(self, message: str, retry_after: float = 0.0) -> float:
+        with self._lock:
+            self.consecutive_failures += 1
+            delay = max(min(retry_after, RETRY_MAX_DELAY),
+                        _backoff_delay(self.consecutive_failures))
+            self.next_ok_at = _now() + delay
+            self.last_error = message[:200]
+            count = self.consecutive_failures
+        log.warning(f"Gemini nicht erreichbar/ueberlastet (Fehler #{count} in Folge) – "
+                    f"naechster Versuch in {int(delay)}s")
+        return delay
+
+    def mark_success(self):
+        with self._lock:
+            recovered = self.consecutive_failures > 0
+            self.consecutive_failures = 0
+            self.next_ok_at           = 0.0
+            self.last_error           = ""
+        if recovered:
+            log.info("Gemini wieder erreichbar – Retry-Sperre aufgehoben")
+
+    def wait_seconds(self) -> float:
+        with self._lock:
+            return max(0.0, self.next_ok_at - _now())
+
+    def as_dict(self) -> dict:
+        with self._lock:
+            return {
+                "consecutive_failures": self.consecutive_failures,
+                "retry_in_seconds":     int(max(0.0, self.next_ok_at - _now())),
+                "last_error":           self.last_error,
+            }
+
+upstream = UpstreamState()
+
+def _gate_wait() -> float:
+    """Seconds until Gemini may be contacted again: the longer of the quota
+    backoff and the transient-failure backoff."""
+    return max(quota.wait_seconds(), upstream.wait_seconds())
+
+# Batch ids a thread in this process is working on right now. The stale
+# sweeper must not requeue those, or a slow request would be sent twice.
+_inflight      = set()
+_inflight_lock = threading.Lock()
+_gemini_slot   = threading.BoundedSemaphore(GEMINI_CONCURRENCY)
+
+def _set_pending(batch_id: int, next_attempt: float, message: str,
+                 attempts: int, first_error_at=None):
+    with _db() as conn:
+        conn.execute(
+            """UPDATE batches
+               SET status='pending', next_attempt=?, last_error=?, attempts=?,
+                   first_error_at=COALESCE(first_error_at, ?)
+               WHERE id=?""",
+            (next_attempt, message, attempts, first_error_at, batch_id)
+        )
+
+def _defer_batch(batch_id: int, delay: float):
+    """Park a batch without having sent anything (gate closed): no attempt used."""
+    with _db() as conn:
+        conn.execute(
+            "UPDATE batches SET status='pending', next_attempt=? WHERE id=?",
+            (_now() + delay, batch_id)
+        )
+
+def _drop_batch(batch_id: int, reason: str, counter: str, attempts: int = 0):
+    """Final failure. Always logged and counted - dropping must never be silent."""
+    with _db() as conn:
+        conn.execute(
+            "UPDATE batches SET status='error', next_attempt=NULL, last_error=?, "
+            "attempts=MAX(attempts, ?) WHERE id=?",
+            (reason, attempts, batch_id)
+        )
+    _inc("errors")
+    _inc(counter)
+    with stats_lock:
+        total = _stats[counter]
+    log.error(f"Batch {batch_id} verworfen ({counter}={total}): {reason}")
+
+def _handle_failure(batch_id: int, failure: GeminiFailure):
+    now     = _now()
+    message = _RedactSecrets.scrub(failure.message)[:300]
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT attempts, first_error_at FROM batches WHERE id=?", (batch_id,)
+        ).fetchone()
+    attempts       = (row["attempts"] if row else 0) + 1
+    first_error_at = row["first_error_at"] if row else None
+
+    if failure.kind == "permanent":
+        _drop_batch(batch_id, f"permanent: {message}", "dropped_permanent", attempts)
+        return
+
+    if failure.kind == "quota":
+        # Waiting for the quota reset is not a failure of the batch: it keeps
+        # its place in the queue for as long as it takes.
+        next_attempt = max(quota.retry_at or now, now)
+        _set_pending(batch_id, next_attempt, message, attempts)
+        _inc("retries_scheduled")
+        log.warning(f"Batch {batch_id} pausiert wegen Quota-Erschoepfung "
+                    f"(erneut in {int(next_attempt - now)}s)")
+        return
+
+    if failure.kind == "bad_response":
+        if attempts >= RETRY_BAD_RESPONSE_MAX:
+            _drop_batch(batch_id, f"bad_response nach {attempts} Versuchen: {message}",
+                        "dropped_bad_response", attempts)
+            return
+    else:   # transient / config
+        started = _parse_iso(first_error_at) or now
+        if now - started > RETRY_MAX_AGE_HOURS * 3600:
+            _drop_batch(batch_id,
+                        f"seit {RETRY_MAX_AGE_HOURS:g}h nicht analysierbar ({failure.kind}): {message}",
+                        "expired", attempts)
+            return
+        if first_error_at is None:
+            first_error_at = _iso(now)
+        upstream.mark_failure(message, failure.retry_after)
+
+    next_attempt = now + max(_backoff_delay(attempts), upstream.wait_seconds())
+    _set_pending(batch_id, next_attempt, message, attempts, first_error_at)
+    _inc("retries_scheduled")
+    log.warning(f"Batch {batch_id}: {failure.kind} ({message}) – Versuch {attempts}, "
+                f"erneut in {int(next_attempt - now)}s")
+
+def _requeue_stale(older_than: float) -> int:
+    """Put 'analyzing' batches nobody works on back into the queue. A restart
+    kills every in-flight request, so at startup older_than is 0 and all of
+    them qualify; at runtime the in-flight set protects live requests."""
+    now = _now()
+    with _inflight_lock:
+        busy = set(_inflight)
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id FROM batches WHERE status='analyzing' "
+            "AND (claimed_at IS NULL OR claimed_at <= ?)", (now - older_than,)
+        ).fetchall()
+        ids = [r["id"] for r in rows if r["id"] not in busy]
+        for batch_id in ids:
+            conn.execute(
+                "UPDATE batches SET status='pending', next_attempt=? "
+                "WHERE id=? AND status='analyzing'", (now, batch_id))
+    if ids:
+        _inc("recovered_stale", len(ids))
+        log.warning(f"{len(ids)} haengende Batches (analyzing) wieder eingereiht: {ids[:10]}")
+    return len(ids)
+
+def _retry_once() -> bool:
+    """Run at most one due batch. Returns True if a Gemini attempt was made."""
+    _requeue_stale(STALE_ANALYZING_SECONDS)
+    if _gate_wait() > 0:
+        return False
+    now = _now()
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT id, raw_groups, source FROM batches "
+            "WHERE status='pending' AND COALESCE(next_attempt, 0) <= ? "
+            "ORDER BY COALESCE(next_attempt, 0), id LIMIT 1", (now,)
+        ).fetchone()
+        if row is None:
+            return False
+        claimed = conn.execute(
+            "UPDATE batches SET status='analyzing', claimed_at=? "
+            "WHERE id=? AND status='pending'", (now, row["id"])
+        ).rowcount
+    if claimed != 1:
+        return False
+    try:
+        groups = json.loads(row["raw_groups"])
+    except ValueError:
+        _drop_batch(row["id"], "raw_groups nicht lesbar", "dropped_permanent")
+        return True
+    log.info(f"Retry-Worker: verarbeite Batch {row['id']} erneut (Quelle: {row['source']})")
+    _do_gemini_and_save(row["id"], groups, source=row["source"], is_retry=True)
+    return True
 
 def retry_worker():
-    """Laeuft dauerhaft, verarbeitet Retry-Queue sobald Quota wieder frei."""
+    """Runs forever: retries due batches from the database (survives restarts)."""
     while True:
-        time.sleep(30)
-        if not retry_queue:
-            continue
-        if not quota.can_send():
-            log.debug(f"Retry-Worker: Quota gesperrt, {quota.as_dict()['retry_in_seconds']}s warten")
-            continue
-        with retry_queue_lock:
-            if not retry_queue:
-                continue
-            batch_id, groups, source = retry_queue.pop(0)
-        log.info(f"Retry-Worker: verarbeite Batch {batch_id} erneut (Quelle: {source})")
-        _do_gemini_and_save(batch_id, groups, source=source, is_retry=True)
+        did_work = False
+        try:
+            did_work = _retry_once()
+        except Exception:
+            log.exception("Retry-Worker: unerwarteter Fehler")
+        time.sleep(RETRY_PACE if did_work else RETRY_POLL)
 
 # ─── Datenbank ────────────────────────────────────────────────────────────────
 def get_db_conn():
@@ -470,6 +717,24 @@ class _db:
             self.conn.commit()
         self.conn.close()
 
+# Retry bookkeeping added for #43. Databases created by earlier versions get
+# the columns via ALTER TABLE (cheap: SQLite only touches the schema).
+_BATCH_RETRY_COLUMNS = (
+    ("attempts",       "INTEGER NOT NULL DEFAULT 0"),
+    ("next_attempt",   "REAL"),
+    ("first_error_at", "TEXT"),
+    ("last_error",     "TEXT"),
+    ("claimed_at",     "REAL"),
+)
+
+def _migrate_schema(conn: sqlite3.Connection):
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(batches)")}
+    for name, ddl in _BATCH_RETRY_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE batches ADD COLUMN {name} {ddl}")
+            log.info(f"Datenbank migriert: batches.{name} angelegt")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_retry ON batches(status, next_attempt)")
+
 def init_db():
     data_dir = Path(DB_PATH).parent
     # mode= is only honoured when mkdir actually creates the directory, so an
@@ -487,7 +752,12 @@ def init_db():
                 summary       TEXT,
                 overall_risk  TEXT    DEFAULT 'unknown',
                 status        TEXT    DEFAULT 'pending',
-                source        TEXT    DEFAULT 'live'
+                source        TEXT    DEFAULT 'live',
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                next_attempt  REAL,
+                first_error_at TEXT,
+                last_error    TEXT,
+                claimed_at    REAL
             );
 
             CREATE TABLE IF NOT EXISTS findings (
@@ -507,6 +777,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_batches_created   ON batches(created_at);
             CREATE INDEX IF NOT EXISTS idx_batches_source    ON batches(source);
         """)
+        _migrate_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -540,6 +811,10 @@ _stats     = {
     "batches_sent": 0, "errors": 0,
     "history_alerts": 0, "history_done": False,
     "history_files_total": 0, "history_files_done": 0,
+    # Retry bookkeeping (#43): every final failure ends in exactly one of the
+    # dropped_*/expired counters, so "errors" can always be explained.
+    "retries_scheduled": 0, "retries_succeeded": 0, "recovered_stale": 0,
+    "dropped_permanent": 0, "dropped_bad_response": 0, "expired": 0,
 }
 
 def _inc(key, n=1):
@@ -587,6 +862,20 @@ def _flush(source: str = "live"):
         daemon=True, name=f"gemini-{source}"
     )
     t.start()
+
+def _store_batch(alerts: list, source: str) -> tuple:
+    """Persist a batch as 'analyzing' before Gemini is contacted. From here on
+    the batch survives restarts: it is either finished or re-queued."""
+    groups = group_alerts(alerts)
+    with _db() as conn:
+        cur = conn.execute(
+            "INSERT INTO batches (created_at, alert_count, raw_groups, status, source, claimed_at) "
+            "VALUES (?, ?, ?, 'analyzing', ?, ?)",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"), len(alerts),
+             json.dumps(groups), source, _now())
+        )
+        batch_id = cur.lastrowid
+    return batch_id, groups
 
 # ─── Historische Analyse ──────────────────────────────────────────────────────
 def find_alert_files() -> list:
@@ -645,7 +934,7 @@ def historical_scan():
                         continue
 
                     if len(local_buf) >= HISTORY_BATCH:
-                        _wait_for_quota()
+                        _wait_for_gate()
                         _send_history_batch(local_buf[:])
                         local_buf.clear()
                         wm[filepath] = line_num
@@ -658,7 +947,7 @@ def historical_scan():
             continue
 
         if local_buf:
-            _wait_for_quota()
+            _wait_for_gate()
             _send_history_batch(local_buf)
 
         wm[filepath] = line_num
@@ -671,22 +960,17 @@ def historical_scan():
         done = _stats["history_alerts"]
     log.info(f"Historische Analyse abgeschlossen: {done} Alerts verarbeitet")
 
-def _wait_for_quota():
-    """Blockiert solange Quota erschoepft ist."""
-    while not quota.can_send():
-        remaining = quota.as_dict()["retry_in_seconds"]
-        log.info(f"Historisch: warte auf Quota-Reset ({remaining}s verbleibend) …")
+def _wait_for_gate():
+    """Blockiert solange Quota erschoepft ist oder Gemini nach einem Fehler pausiert."""
+    while True:
+        remaining = _gate_wait()
+        if remaining <= 0:
+            return
+        log.info(f"Historisch: warte auf Gemini-Freigabe ({int(remaining)}s verbleibend) …")
         time.sleep(min(remaining + 2, 120))
 
 def _send_history_batch(alerts: list):
-    groups = group_alerts(alerts)
-    with _db() as conn:
-        cur = conn.execute(
-            "INSERT INTO batches (created_at, alert_count, raw_groups, status, source) VALUES (?, ?, ?, 'analyzing', 'history')",
-            (datetime.now(timezone.utc).isoformat(timespec="seconds"), len(alerts), json.dumps(groups))
-        )
-        batch_id = cur.lastrowid
-        conn.commit()
+    batch_id, groups = _store_batch(alerts, "history")
     _do_gemini_and_save(batch_id, groups, source="history")
 
 # ─── Live-Watcher ─────────────────────────────────────────────────────────────
@@ -825,15 +1109,21 @@ Gib AUSSCHLIESSLICH dieses JSON zurueck (keine anderen Zeichen, kein Markdown):
 Sortiere findings nach Schwere (kritischstes zuerst).\
 """
 
+def _retry_after_seconds(resp) -> float:
+    """Numeric Retry-After header in seconds; 0 if absent or an HTTP date."""
+    try:
+        return max(0.0, float(resp.headers.get("Retry-After", 0)))
+    except (TypeError, ValueError):
+        return 0.0
+
 def call_gemini(groups: list) -> tuple:
     """
-    Gibt (result_dict, None) bei Erfolg zurueck.
-    Gibt (None, 'quota') bei Rate-Limit/Quota zurueck.
-    Gibt (None, 'error') bei anderen Fehlern zurueck.
+    Gibt (result_dict, None) bei Erfolg zurueck, sonst (None, GeminiFailure).
+    Die Art des Fehlers entscheidet, ob ein Batch wiederholt wird (siehe GeminiFailure).
     """
     if not GEMINI_API_KEY:
         log.error("GEMINI_API_KEY nicht gesetzt")
-        return None, "error"
+        return None, GeminiFailure("config", "GEMINI_API_KEY nicht gesetzt")
 
     prompt  = _PROMPT_TPL.format(infra=INFRA_CONTEXT, groups=json.dumps(groups, ensure_ascii=False, indent=2))
     url     = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -849,7 +1139,7 @@ def call_gemini(groups: list) -> tuple:
 
         # ── 429: Rate-Limit oder Tages-Quota ─────────────────────────────
         if resp.status_code == 429:
-            retry_after = float(resp.headers.get("Retry-After", 0))
+            retry_after = _retry_after_seconds(resp)
             try:
                 body = resp.json()
                 msg  = body.get("error", {}).get("message", "") or resp.text[:150]
@@ -863,62 +1153,86 @@ def call_gemini(groups: list) -> tuple:
                 else:
                     retry_after = 65
             quota.mark_exhausted(msg, retry_after)
-            return None, "quota"
+            upstream.mark_success()   # the API answered, only the quota is empty
+            return None, GeminiFailure("quota", msg, retry_after)
 
         # ── Andere HTTP-Fehler ────────────────────────────────────────────
         if not resp.ok:
-            log.error(f"Gemini HTTP {resp.status_code}: {resp.text[:200]}")
-            return None, "error"
+            code = resp.status_code
+            msg  = f"Gemini HTTP {code}: {resp.text[:200]}"
+            log.error(msg)
+            if code >= 500 or code in (408, 425):
+                return None, GeminiFailure("transient", msg, _retry_after_seconds(resp))
+            if code in (401, 403, 404):
+                # Key revoked / wrong model: every batch fails alike, and the
+                # operator can fix it. Do not throw the queue away meanwhile.
+                return None, GeminiFailure("config", msg)
+            upstream.mark_success()   # reachable - this payload is the problem
+            return None, GeminiFailure("permanent", msg)
 
         data   = resp.json()
         raw    = data["candidates"][0]["content"]["parts"][0]["text"]
         raw    = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         result = json.loads(raw)
+        if not isinstance(result, dict):
+            raise ValueError(f"JSON-Objekt erwartet, {type(result).__name__} erhalten")
         quota.mark_success()
+        upstream.mark_success()
         return result, None
 
     except requests.Timeout:
         log.error("Gemini: Timeout")
-        return None, "error"
-    except requests.ConnectionError as e:
+        return None, GeminiFailure("transient", "Gemini: Timeout")
+    except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
         log.error(f"Gemini: Verbindungsfehler: {e}")
-        return None, "error"
-    except (KeyError, json.JSONDecodeError) as e:
-        log.error(f"Gemini: Antwort parsen fehlgeschlagen: {e}")
-        return None, "error"
+        return None, GeminiFailure("transient", f"Gemini: Verbindungsfehler: {e}")
+    except (KeyError, IndexError, TypeError, ValueError) as e:   # JSONDecodeError is a ValueError
+        log.error(f"Gemini: Antwort parsen fehlgeschlagen: {e!r}")
+        return None, GeminiFailure("bad_response", f"Antwort nicht auswertbar: {e!r}")
     except Exception as e:
         log.error(f"Gemini: Fehler: {e}")
-        return None, "error"
+        return None, GeminiFailure("bad_response", f"Gemini: Fehler: {e}")
 
 # ─── Batch-Analyse ────────────────────────────────────────────────────────────
 def analyze_batch(alerts: list, source: str = "live"):
-    groups = group_alerts(alerts)
-    log.info(f"[{source}] Analysiere {len(alerts)} Alerts in {len(groups)} Gruppen …")
-    with _db() as conn:
-        cur = conn.execute(
-            "INSERT INTO batches (created_at, alert_count, raw_groups, status, source) VALUES (?, ?, ?, 'analyzing', ?)",
-            (datetime.now(timezone.utc).isoformat(timespec="seconds"), len(alerts), json.dumps(groups), source)
-        )
-        batch_id = cur.lastrowid
-        conn.commit()
+    log.info(f"[{source}] Analysiere {len(alerts)} Alerts …")
+    batch_id, groups = _store_batch(alerts, source)
     _do_gemini_and_save(batch_id, groups, source=source)
 
 def _do_gemini_and_save(batch_id: int, groups: list, source: str = "live", is_retry: bool = False):
-    result, err_type = call_gemini(groups)
+    """Run one Gemini attempt for an already stored batch. Whatever happens, the
+    batch ends up 'done', 'pending' (queued for retry) or 'error' (counted)."""
+    with _inflight_lock:
+        _inflight.add(batch_id)
+    try:
+        with _gemini_slot:
+            wait = _gate_wait()
+            if wait > 0:
+                # Another request just failed or the quota is empty: do not send,
+                # park without using up an attempt.
+                _defer_batch(batch_id, wait)
+                log.info(f"Batch {batch_id} zurueckgestellt ({int(wait)}s): Gemini-Sperre aktiv")
+                return
+            result, failure = call_gemini(groups)
+        if failure is not None:
+            _handle_failure(batch_id, failure)
+            return
+        _save_result(batch_id, result, source, is_retry)
+        if is_retry:
+            _inc("retries_succeeded")
+    except Exception as exc:
+        log.exception(f"Batch {batch_id}: unerwarteter Fehler")
+        try:
+            _handle_failure(batch_id, GeminiFailure("bad_response", f"interner Fehler: {exc!r}"))
+        except Exception:
+            # The database itself is failing; the row is still 'analyzing' and
+            # the stale sweeper re-queues it once the database is back.
+            log.exception(f"Batch {batch_id}: konnte nicht eingereiht werden")
+    finally:
+        with _inflight_lock:
+            _inflight.discard(batch_id)
 
-    if err_type == "quota":
-        # Nicht als 'error' markieren – bleibt auf 'analyzing' fuer spaeteres Retry
-        log.warning(f"Batch {batch_id} pausiert wegen Quota-Erschoepfung")
-        enqueue_retry(batch_id, groups, source=source)
-        return
-
-    if result is None:
-        _inc("errors")
-        with _db() as conn:
-            conn.execute("UPDATE batches SET status='error' WHERE id=?", (batch_id,))
-            conn.commit()
-        return
-
+def _save_result(batch_id: int, result: dict, source: str, is_retry: bool):
     # ── Whitelist-Validierung: LLM-Output sanitisieren ─────────────────────────
     _VALID_RISK = {"critical", "high", "medium", "low", "info", "unknown"}
     _VALID_SEV  = {"critical", "high", "medium", "low", "info"}
@@ -934,8 +1248,9 @@ def _do_gemini_and_save(batch_id: int, groups: list, source: str = "live", is_re
 
     with _db() as conn:
         conn.execute(
-            "UPDATE batches SET summary=?, overall_risk=?, status='done' WHERE id=?",
-            (result.get("summary", "")[:2000], safe_risk, batch_id)
+            "UPDATE batches SET summary=?, overall_risk=?, status='done', "
+            "next_attempt=NULL, last_error=NULL WHERE id=?",
+            (str(result.get("summary", ""))[:2000], safe_risk, batch_id)
         )
         for f in findings:
             raw_sev = f.get("severity", "info")
@@ -967,15 +1282,15 @@ def api_stats():
             "SELECT created_at FROM batches WHERE status='done' ORDER BY id DESC LIMIT 1"
         ).fetchone()
         batch_count  = conn.execute("SELECT COUNT(*) FROM batches WHERE status='done'").fetchone()[0]
-        analyzing    = conn.execute("SELECT COUNT(*) FROM batches WHERE status='analyzing'").fetchone()[0]
+        by_status    = {row["status"]: row["c"] for row in
+                        conn.execute("SELECT status, COUNT(*) c FROM batches GROUP BY status")}
+        analyzing    = by_status.get("analyzing", 0)
         hist_done    = conn.execute("SELECT COUNT(*) FROM batches WHERE source='history' AND status='done'").fetchone()[0]
 
     with buffer_lock:
         buffered = len(alert_buffer)
     with stats_lock:
         s = dict(_stats)
-    with retry_queue_lock:
-        rq = len(retry_queue)
 
     return jsonify({
         "total_findings":   total,
@@ -989,7 +1304,11 @@ def api_stats():
         "runtime":          s,
         "gemini_ok":        bool(GEMINI_API_KEY),
         "quota":            quota.as_dict(),
-        "retry_queue_size": rq,
+        # Persistent queue: batches waiting for their next attempt.
+        "retry_queue_size": by_status.get("pending", 0),
+        "batches": {status: by_status.get(status, 0)
+                    for status in ("done", "error", "pending", "analyzing")},
+        "upstream":         upstream.as_dict(),
         "history": {
             "done":            s["history_done"],
             "alerts_scanned":  s["history_alerts"],
@@ -1107,6 +1426,10 @@ if __name__ == "__main__":
         log.warning("  Dann DASHBOARD_PASSWORD_HASH=<hash> in /etc/wazuh-ai-analyzer.env eintragen")
     else:
         log.info(f"Login:         User '{DASHBOARD_USER}' | Session-Lifetime: {SESSION_LIFETIME // 3600}h")
+
+    # Whatever was in flight when the previous process died is gone for good:
+    # re-queue it instead of leaving it on 'analyzing' forever.
+    _requeue_stale(0)
 
     threading.Thread(target=historical_scan, daemon=True, name="history").start()
     threading.Thread(target=tail_alerts,     daemon=True, name="live").start()
