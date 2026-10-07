@@ -1928,7 +1928,7 @@ def _finding_dict(r):
         "affected_agents": json.loads(r["affected_agents"] or "[]"),
         "rule_ids":        json.loads(r["rule_ids"] or "[]"),
         "batch_time":      r["batch_time"],
-        "source":          r.get("batch_source", "live"),
+        "source":          r["batch_source"] or "live",
     }
 
 @app.route("/", defaults={"path": ""})
