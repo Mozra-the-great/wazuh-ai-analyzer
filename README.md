@@ -125,7 +125,7 @@ systemctl restart wazuh-ai-analyzer
 | `MIN_LEVEL` | `5` | Minimales Wazuh-Alert-Level (1–15) |
 | `BATCH_MAX` | `25` | Alerts pro Gemini-Anfrage |
 | `BATCH_TIMEOUT` | `300` | Sekunden bis Flush (auch bei weniger als BATCH_MAX Alerts) |
-| `BATCH_TIMEOUT_QUIET` | = `BATCH_TIMEOUT` | Wartezeit für einen nicht vollen Batch, solange er **nur** Alerts unter `URGENT_LEVEL` enthält (mindestens `BATCH_TIMEOUT`). Größer gesetzt (z. B. `900`) werden aus vielen Mini-Batches wenige volle – das spart Free-Tier-Anfragen, siehe [Anfragen sparen](#anfragen-sparen-gemini-free-tier) |
+| `BATCH_TIMEOUT_QUIET` | `0` (= `BATCH_TIMEOUT`) | Wartezeit für einen nicht vollen Batch, solange er **nur** Alerts unter `URGENT_LEVEL` enthält (mindestens `BATCH_TIMEOUT`). Größer gesetzt (z. B. `900`) werden aus vielen Mini-Batches wenige volle – das spart Free-Tier-Anfragen, siehe [Anfragen sparen](#anfragen-sparen-gemini-free-tier) |
 | `URGENT_LEVEL` | `10` | Ab diesem Wazuh-Level gilt der kurze `BATCH_TIMEOUT` weiter |
 | `HISTORY_BATCH` | `50` | Alerts pro Anfrage beim historischen Scan |
 | `HISTORY_PAUSE` | `8` | Sekunden Pause zwischen historischen Batches |

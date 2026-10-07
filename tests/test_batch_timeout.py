@@ -1,7 +1,4 @@
 """Tiered flush window: quiet (low-level) buffers wait longer, urgent ones do not."""
-import importlib
-import sys
-
 import pytest
 
 pytest.importorskip("flask")
@@ -12,7 +9,7 @@ def a(level):
 
 
 def test_default_keeps_single_timeout(az):
-    assert az.BATCH_TIMEOUT_QUIET == az.BATCH_TIMEOUT
+    assert az.BATCH_TIMEOUT_QUIET == 0
     assert az._flush_timeout([a(5), a(12)]) == az.BATCH_TIMEOUT
 
 
@@ -30,12 +27,10 @@ def test_malformed_alerts_do_not_break_the_decision(az, monkeypatch):
     assert az._flush_timeout([{}, {"rule": "x"}, {"rule": {"level": "n/a"}}]) == 900
 
 
-def test_quiet_window_is_never_shorter_than_the_normal_timeout(monkeypatch):
-    monkeypatch.setenv("BATCH_TIMEOUT", "300")
-    monkeypatch.setenv("BATCH_TIMEOUT_QUIET", "60")
-    sys.modules.pop("analyzer", None)
-    mod = importlib.import_module("analyzer")
-    try:
-        assert mod.BATCH_TIMEOUT_QUIET == 300
-    finally:
-        sys.modules.pop("analyzer", None)
+def test_quiet_window_is_never_shorter_than_the_normal_timeout(az, monkeypatch):
+    monkeypatch.setattr(az, "BATCH_TIMEOUT", 300)
+    monkeypatch.setattr(az, "BATCH_TIMEOUT_QUIET", 60)
+    assert az._flush_timeout([a(5)]) == 300
+    monkeypatch.setattr(az, "BATCH_TIMEOUT", 2)           # tests / small setups follow BATCH_TIMEOUT
+    monkeypatch.setattr(az, "BATCH_TIMEOUT_QUIET", 0)
+    assert az._flush_timeout([a(5)]) == 2

@@ -44,7 +44,7 @@ BATCH_TIMEOUT   = int(os.environ.get("BATCH_TIMEOUT", "300"))
 # to this long (never less than BATCH_TIMEOUT) before sending a part-filled batch.
 # Defaults keep the old behaviour (one request per BATCH_TIMEOUT at most); raising
 # it turns many tiny batches into few fuller ones and saves free-tier requests.
-BATCH_TIMEOUT_QUIET = max(int(os.environ.get("BATCH_TIMEOUT_QUIET", str(BATCH_TIMEOUT))), BATCH_TIMEOUT)
+BATCH_TIMEOUT_QUIET = int(os.environ.get("BATCH_TIMEOUT_QUIET", "0"))   # 0 = same as BATCH_TIMEOUT
 URGENT_LEVEL    = int(os.environ.get("URGENT_LEVEL", "10"))
 MIN_LEVEL       = int(os.environ.get("MIN_LEVEL", "5"))
 PORT            = int(os.environ.get("PORT", "8765"))
@@ -1196,7 +1196,7 @@ def _flush_timeout(buffered: list) -> int:
     for alert in buffered:
         if _as_int(_as_dict(alert.get("rule")).get("level")) >= URGENT_LEVEL:
             return BATCH_TIMEOUT
-    return BATCH_TIMEOUT_QUIET
+    return max(BATCH_TIMEOUT_QUIET, BATCH_TIMEOUT)
 
 def _flush(source: str = "live"):
     global last_flush_ts
@@ -2028,7 +2028,7 @@ def api_stats():
         "buffered_alerts":  buffered,
         "batch_max":        BATCH_MAX,
         "batch_timeout":    BATCH_TIMEOUT,
-        "batch_timeout_quiet": BATCH_TIMEOUT_QUIET,
+        "batch_timeout_quiet": max(BATCH_TIMEOUT_QUIET, BATCH_TIMEOUT),
         "urgent_level":     URGENT_LEVEL,
         "runtime":          s,
         "gemini_ok":        bool(GEMINI_API_KEY),
@@ -2169,7 +2169,7 @@ if __name__ == "__main__":
     log.info(f"Dashboard:     http://{LISTEN_HOST}:{PORT}/login")
     bind_note = "(localhost only – use SSH tunnel or reverse proxy)" if LISTEN_HOST == "127.0.0.1" else "(EXPOSED – ensure only accessible via trusted network/proxy)"
     log.info(f"Bind:          {LISTEN_HOST} {bind_note}")
-    log.info(f"Batch:         {BATCH_MAX} Alerts / {BATCH_TIMEOUT}s Timeout ({BATCH_TIMEOUT_QUIET}s unter Level {URGENT_LEVEL}) | Min-Level: {MIN_LEVEL}")
+    log.info(f"Batch:         {BATCH_MAX} Alerts / {BATCH_TIMEOUT}s Timeout ({max(BATCH_TIMEOUT_QUIET, BATCH_TIMEOUT)}s unter Level {URGENT_LEVEL}) | Min-Level: {MIN_LEVEL}")
     log.info(f"History:       {HISTORY_BATCH} Alerts/Batch | {HISTORY_PAUSE}s Pause")
     log.info(f"Infra-Kontext: {INFRA_CONTEXT}")
 
