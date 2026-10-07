@@ -250,6 +250,20 @@ Beim Start wird das mit dem Dateisystem abgeglichen:
 
 ---
 
+## Abhängigkeiten (Hash-Pinning)
+
+`requirements.txt` ist mit `pip-compile --generate-hashes` aus `requirements.in` erzeugt und
+enthält für jedes Paket (auch transitive) einen SHA256. Der Installer und die CI installieren mit
+`pip install --require-hashes -r requirements.txt`; ein manipuliertes PyPI-Release wird abgelehnt.
+Version anheben: Pin in `requirements.in` ändern, dann
+
+```bash
+pip install pip-tools
+pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
+```
+
+---
+
 ## Nützliche Befehle
 
 ```bash

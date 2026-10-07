@@ -23,6 +23,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install pytest
       - name: Run tests
         run: python -m pytest -q

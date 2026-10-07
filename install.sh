@@ -267,8 +267,11 @@ download "requirements.txt" "${INSTALL_DIR}/requirements.txt"
 if [[ "${WAZUH_AI_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
     verify_checksum "requirements.txt" "${INSTALL_DIR}/requirements.txt" "$CHECKSUMS_FILE"
 fi
-"${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements.txt"
-ok "Python-Pakete: $(tr '\n' ' ' < "${INSTALL_DIR}/requirements.txt")"
+# --require-hashes: pip refuses any artifact (direct or transitive) whose sha256 is
+# not listed in requirements.txt, so a tampered PyPI release cannot slip in (#39).
+"${INSTALL_DIR}/venv/bin/pip" install --quiet --require-hashes -r "${INSTALL_DIR}/requirements.txt" \
+    || error "pip install --require-hashes fehlgeschlagen - passt requirements.txt zur gewaehlten WAZUH_AI_REF (Hashes gibt es erst nach v1.0.0)?"
+ok "Python-Pakete (hash-geprueft): $(grep -oE '^[A-Za-z0-9_.-]+==[^ ]+' "${INSTALL_DIR}/requirements.txt" | tr '\n' ' ')"
 
 # Passwort hashen – jetzt wo Werkzeug im venv verfügbar ist
 info "Passwort-Hash generieren …"
