@@ -1,0 +1,11 @@
+# Direct dependencies of the analyzer. requirements.txt is generated from this
+# file and carries a sha256 for every artifact (direct and transitive), so
+# `pip install --require-hashes -r requirements.txt` refuses anything that is
+# not byte-identical to what was reviewed.
+#
+# Regenerate (also to bump a version) with:
+#   pip install pip-tools
+#   pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
+flask==3.1.3
+requests==2.34.2
+werkzeug==3.1.9
