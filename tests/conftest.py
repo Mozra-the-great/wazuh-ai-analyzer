@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import threading
 
 import pytest
 
@@ -37,5 +38,10 @@ def az(tmp_path, monkeypatch):
     monkeypatch.setattr(analyzer, "alert_buffer", [])
     monkeypatch.setattr(analyzer, "_inflight", set())
     monkeypatch.setattr(analyzer, "_permanent_streak", 0)
+    monkeypatch.setattr(analyzer, "watermark", analyzer.WatermarkStore(data / "watermark.json"))
+    monkeypatch.setattr(analyzer, "live_cursor", analyzer._LiveCursor())
+    monkeypatch.setattr(analyzer, "plan_ready", threading.Event())
+    monkeypatch.setattr(analyzer, "_segment_failures", {})
+    monkeypatch.setattr(analyzer, "HISTORY_PAUSE", 0)
     analyzer.init_db()
     return analyzer

@@ -15,8 +15,8 @@ Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
 ## Features
 
 - 🔐 **Login-Schutz** – Benutzername + Passwort (pbkdf2:sha256), Session-basiert, Brute-Force-Schutz
-- 📂 **Historische Analyse** – scannt alle vorhandenen Alert-Logs ab dem ersten Tag, nicht nur neue
-- 🔄 **Log-Rotation-Support** – erkennt Wazuh-Log-Rotation automatisch per Inode-Vergleich und öffnet neu
+- 📂 **Historische Analyse** – scannt beim ersten Start alle vorhandenen Alert-Logs, nicht nur neue; holt nach einem Neustart oder Ausfall alles nach, was in der Zwischenzeit geschrieben wurde
+- 🔄 **Log-Rotation-Support** – erkennt Wazuh-Log-Rotation (`alerts.json` → `YYYY/Mon/ossec-alerts-DD.json.gz`), liest die alte Datei zu Ende und macht mit der neuen bei Byte 0 weiter; auch über Neustarts und mehrtägige Ausfälle hinweg, ohne doppelte oder fehlende Alerts
 - 🔴 **Live-Überwachung** – verfolgt `alerts.json` kontinuierlich und analysiert neue Alerts automatisch
 - ⏳ **Intelligentes Batching** – sammelt Alerts und sendet sie gebündelt, um API-Tokens zu sparen
 - ⚠️ **Quota-Handling** – pausiert bei erschöpftem Gemini-Kontingent, zeigt Countdown im Dashboard und macht automatisch weiter
@@ -31,7 +31,7 @@ Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
 
 ```
 Wazuh alerts.json
-      ↓  (tail -f, inode-aware bei Log-Rotation)
+      ↓  (tail -f, Lesestelle = Datei-Identität + Byte-Offset, siehe unten)
   Alert-Buffer
       ↓  (nach N Alerts ODER X Sekunden)
   Gruppierung nach Rule-ID  →  spart Gemini-Tokens
@@ -217,9 +217,35 @@ Das Dashboard aktualisiert sich automatisch alle 20 Sekunden.
 
 Zeigt Fehlermeldung von Google, Uhrzeit seit wann die Quota erschöpft ist, Countdown bis zum nächsten Versuch und Anzahl wartender Batches. Verschwindet automatisch sobald die Analyse wieder läuft.
 
-**Historischer Scan (erscheint beim ersten Start):**
+**Historischer Scan / Nachholen (erscheint beim ersten Start und wenn nach einem Neustart etwas nachzuholen ist):**
 
 Blauer Fortschrittsbalken mit Datei-Fortschritt und Anzahl verarbeiteter Alerts. Macht nach einem Neustart nahtlos weiter (Watermark-Datei).
+
+---
+
+## Lesestelle (Watermark)
+
+`data/watermark.json` (Format v2) merkt sich, wie weit die Alerts gelesen sind:
+
+- **`live`** – die Datei, die der Live-Watcher gerade liest: Device/Inode, Byte-Offset (im
+  unkomprimierten Strom) und ein Hash der ersten Zeile. Der Hash erkennt dieselbe Datei auch
+  nach Umbenennen, Hardlink und `gzip` (neuer Inode). Der Offset wird erst fortgeschrieben,
+  **nachdem** der Batch mit den gelesenen Alerts in der Datenbank steht – ein Absturz liest
+  höchstens ein paar Zeilen erneut, verliert aber keine.
+- **`backlog`** – Abschnitte, die noch nachgeholt werden (gedrosselt mit `HISTORY_BATCH` /
+  `HISTORY_PAUSE`, Quota-bewusst).
+
+Beim Start wird das mit dem Dateisystem abgeglichen:
+
+| Befund | Verhalten |
+|---|---|
+| gleiche Datei, Offset kleiner als Dateiende | der Rest kommt als Nachhol-Abschnitt, Live startet am Ende |
+| Datei rotiert | die Vortagsdatei (`ossec-alerts-DD.json(.gz)`, per Hash gefunden) ab Offset zu Ende lesen, danach alle neueren Tagesarchive, danach die neue `alerts.json` ab Byte 0 |
+| Datei gekürzt | von vorn lesen |
+| Vorgängerdatei nicht mehr auffindbar | Warnung im Log; nur neuere Archive und die aktuelle Datei |
+| kein Watermark (Erstinstallation) | vorhandene Alert-Logs neben `alerts.json` und die aktuelle Datei historisch analysieren; Tagesarchive älterer Tage werden **nicht** automatisch aufgerollt (Quota) |
+| altes Format (`{pfad: zeilennummer}`) | Migration ohne erneutes Analysieren: Live startet am aktuellen Dateiende, Kopie als `watermark.json.v1.bak` |
+| unlesbare Datei | wie altes Format, Kopie als `watermark.json.corrupt` |
 
 ---
 
@@ -236,7 +262,7 @@ journalctl -u wazuh-ai-analyzer -f
 nano /etc/wazuh-ai-analyzer.env
 systemctl restart wazuh-ai-analyzer
 
-# Historischen Scan neu starten (Watermark löschen)
+# Historischen Scan neu starten (Watermark löschen; analysiert die aktuelle alerts.json erneut ab Anfang)
 rm /opt/wazuh-ai-analyzer/data/watermark.json
 systemctl restart wazuh-ai-analyzer
 
@@ -294,7 +320,7 @@ an.
 ├── venv/                    # Python-Umgebung
 └── data/
     ├── analyses.db          # SQLite (WAL-Modus) – alle Findings und Batches
-    ├── watermark.json       # Fortschritt des historischen Scans
+    ├── watermark.json       # Lesestelle (Datei-Identität + Offset) und offene Nachhol-Abschnitte
     └── session.key          # Flask-Session-Secret (auto-generiert, chmod 600)
 
 /etc/wazuh-ai-analyzer.env   # Konfiguration (chmod 600, enthält API Key + Passwort-Hash)
@@ -325,7 +351,7 @@ Das Dashboard zeigt priorisierte Sicherheitsschwachstellen deiner Infrastruktur,
 | noindex Meta-Tag | Suchmaschinen indexieren das Dashboard nicht |
 | Generischer Titel | `Security Dashboard` statt produktspezifischer Name (erschwert Shodan-Fingerprinting) |
 | WAL-Modus | SQLite Write-Ahead Logging – keine "database is locked" Fehler unter Last |
-| Inode-Watcher | Log-Rotation wird erkannt, kein Alert-Verlust nach täglicher Wazuh-Rotation |
+| Datei-Identität | Log-Rotation wird erkannt; die Lesestelle hängt an der Datei, nicht am Pfad – kein Alert-Verlust und keine Doppelanalyse nach Rotation oder Neustart |
 
 ### Option 1: SSH-Tunnel (empfohlen für Einzelnutzer)
 
@@ -359,9 +385,9 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 | Service | systemd, läuft als dedizierter unprivilegierter User (MemoryLimit 256M, CPUQuota 25%) |
 | Auth | Session-basiert, pbkdf2:sha256, Brute-Force-Schutz |
 | Proxy-Support | Werkzeug ProxyFix (X-Forwarded-For) |
-| Log-Rotation | Inode-basierter Watcher, automatisches Reopen |
+| Log-Rotation | Watcher liest die alte Datei zu Ende, Neustart-Wiederaufnahme über Datei-Identität (Hash der ersten Zeile) |
 | Fehlerbehandlung | Persistente Retry-Queue (SQLite) mit Backoff und automatischem Resume |
-| Historische Analyse | Watermark-basiert, resumable nach Neustart |
+| Historische Analyse | Nachhol-Abschnitte im Watermark, resumable nach Neustart |
 
 ---
 
