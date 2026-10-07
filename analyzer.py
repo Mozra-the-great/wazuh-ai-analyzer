@@ -57,6 +57,11 @@ RETRY_MAX_DELAY        = float(os.environ.get("RETRY_MAX_DELAY", "3600"))
 # A batch that keeps failing for non-quota reasons for this long becomes
 # status='error'. Quota waits never count - those batches just wait for reset.
 RETRY_MAX_AGE_HOURS    = float(os.environ.get("RETRY_MAX_AGE_HOURS", "72"))
+# Hard limit on how long any batch may wait in the queue, quota waits included.
+# On a 500 requests/day free tier the arrival rate can exceed the quota for days;
+# without a limit the queue (and the delay of every new alert) would only grow.
+# The queue is drained newest first, so what expires is the oldest backlog.
+QUEUE_MAX_AGE_HOURS    = float(os.environ.get("QUEUE_MAX_AGE_HOURS", "72"))
 # Unparseable / empty Gemini answers are not an outage - give up after this many.
 RETRY_BAD_RESPONSE_MAX = int(os.environ.get("RETRY_BAD_RESPONSE_MAX", "3"))
 # Retry worker: poll interval when idle, pause between two retried batches
@@ -486,7 +491,7 @@ def _backoff_delay(attempt: int) -> float:
 class GeminiFailure:
     """Why a Gemini call produced no usable result.
 
-    kind: 'quota'        HTTP 429 - wait for the quota backoff, never expires
+    kind: 'quota'        HTTP 429 - wait for the quota backoff (queue age limit still applies)
           'transient'    5xx/408, timeout, connection error - retry with backoff
           'config'       401/403/404, missing key - retry slowly: the operator
                          can fix the key/model and the parked batches survive
@@ -679,9 +684,29 @@ def _requeue_stale(older_than: float) -> int:
         log.warning(f"{len(ids)} haengende Batches (analyzing) wieder eingereiht: {ids[:10]}")
     return len(ids)
 
+def _expire_old_pending() -> int:
+    """Batches that waited longer than QUEUE_MAX_AGE_HOURS become 'error' - counted
+    and logged, never silent."""
+    cutoff = _iso(_now() - QUEUE_MAX_AGE_HOURS * 3600)
+    with _db() as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM batches WHERE status='pending' AND created_at < ?", (cutoff,))]
+        for batch_id in ids:
+            conn.execute(
+                "UPDATE batches SET status='error', next_attempt=NULL, "
+                "last_error=? WHERE id=?",
+                (f"expired: laenger als {QUEUE_MAX_AGE_HOURS:g}h in der Warteschlange", batch_id))
+    if ids:
+        _inc("errors", len(ids))
+        _inc("expired", len(ids))
+        log.warning(f"{len(ids)} Batches nach {QUEUE_MAX_AGE_HOURS:g}h Wartezeit verworfen "
+                    f"(expired={_stats['expired']}), aelteste IDs: {ids[:5]}")
+    return len(ids)
+
 def _retry_once() -> bool:
     """Run at most one due batch. Returns True if a Gemini attempt was made."""
     _requeue_stale(STALE_ANALYZING_SECONDS)
+    _expire_old_pending()
     if _gate_wait() > 0:
         return False
     now = _now()
@@ -689,7 +714,7 @@ def _retry_once() -> bool:
         row = conn.execute(
             "SELECT id, raw_groups, source FROM batches "
             "WHERE status='pending' AND COALESCE(next_attempt, 0) <= ? "
-            "ORDER BY (source = 'live') DESC, COALESCE(next_attempt, 0), id LIMIT 1", (now,)
+            "ORDER BY (source = 'live') DESC, id DESC LIMIT 1", (now,)
         ).fetchone()
         if row is None:
             return False
