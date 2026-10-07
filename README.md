@@ -8,7 +8,7 @@
 
 Analysiert Wazuh SIEM-Alerts automatisch mit **Google Gemini AI** und stellt sie in einem Web-Dashboard dar – mit KI-Erklärung, Schweregrad-Einstufung und konkreten Handlungsempfehlungen auf Deutsch.
 
-Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
+Kostenlos nutzbar mit dem Google AI Studio Free Tier (Tageskontingent je Modell, aktuell 500 Anfragen/Tag für `gemini-3.1-flash-lite`; siehe [Anfragen sparen](#anfragen-sparen-gemini-free-tier)).
 
 ---
 
@@ -125,6 +125,8 @@ systemctl restart wazuh-ai-analyzer
 | `MIN_LEVEL` | `5` | Minimales Wazuh-Alert-Level (1–15) |
 | `BATCH_MAX` | `25` | Alerts pro Gemini-Anfrage |
 | `BATCH_TIMEOUT` | `300` | Sekunden bis Flush (auch bei weniger als BATCH_MAX Alerts) |
+| `BATCH_TIMEOUT_QUIET` | `0` (= `BATCH_TIMEOUT`) | Wartezeit für einen nicht vollen Batch, solange er **nur** Alerts unter `URGENT_LEVEL` enthält (mindestens `BATCH_TIMEOUT`). Größer gesetzt (z. B. `900`) werden aus vielen Mini-Batches wenige volle – das spart Free-Tier-Anfragen, siehe [Anfragen sparen](#anfragen-sparen-gemini-free-tier) |
+| `URGENT_LEVEL` | `10` | Ab diesem Wazuh-Level gilt der kurze `BATCH_TIMEOUT` weiter |
 | `HISTORY_BATCH` | `50` | Alerts pro Anfrage beim historischen Scan |
 | `HISTORY_PAUSE` | `8` | Sekunden Pause zwischen historischen Batches |
 | `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini Modell |
@@ -247,6 +249,24 @@ Beim Start wird das mit dem Dateisystem abgeglichen:
 | kein Watermark (Erstinstallation) | vorhandene Alert-Logs neben `alerts.json` und die aktuelle Datei historisch analysieren; Tagesarchive älterer Tage werden **nicht** automatisch aufgerollt (Quota) |
 | altes Format (`{pfad: zeilennummer}`) | Migration ohne erneutes Analysieren: Live startet am aktuellen Dateiende, Kopie als `watermark.json.v1.bak` |
 | unlesbare Datei | wie altes Format, Kopie als `watermark.json.corrupt` |
+
+---
+
+## Anfragen sparen (Gemini-Free-Tier)
+
+Das Free-Tier begrenzt die Anfragen pro Tag (Stand 2026-10: 500 für `gemini-3.1-flash-lite`, 15/min;
+Reset 00:00 Pacific). Jeder Batch ist genau eine Anfrage, also zählt die **Anzahl der Batches**, nicht
+die der Alerts. Gemessen an einer echten Installation: ruhige Tage hatten ~200–270 Batches mit
+durchschnittlich 6–10 Alerts, nach dem Herunterstufen von Rauschquellen sogar nur 2,4 Alerts pro Batch,
+weil der 5-Minuten-Timeout immer wieder fast leere Batches sendet. Ein Rauschbursts (hier eine Regel
+mit 26 000 Alerts/Tag) füllt dagegen Batches zu 25 Alerts und verbraucht das Kontingent in Stunden;
+das löst man an der Quelle (Wazuh-Regel herunterstufen) bzw. mit `MIN_LEVEL`, nicht im Analyzer.
+
+Stellschraube im Analyzer: `BATCH_TIMEOUT_QUIET` (siehe oben). Replay der Batches vom 24.09.–07.10.
+(Level-≥10-Alerts weiter nach 300 s): `900` halbiert die Batches ruhiger Tage (242 → 116/Tag, −52 %),
+`1800` → 87/Tag (−64 %); die Zahl der Alert-Gruppen sinkt dabei mit (−31 % / −38 %), weil gleiche
+Regeln in einem größeren Batch zu einer Gruppe zusammenfallen. Der Preis ist Latenz: Alerts unter
+`URGENT_LEVEL` können bis zu `BATCH_TIMEOUT_QUIET` warten.
 
 ---
 
