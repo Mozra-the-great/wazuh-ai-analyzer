@@ -36,5 +36,6 @@ def az(tmp_path, monkeypatch):
         analyzer._stats[key] = False if key == "history_done" else 0
     monkeypatch.setattr(analyzer, "alert_buffer", [])
     monkeypatch.setattr(analyzer, "_inflight", set())
+    monkeypatch.setattr(analyzer, "_permanent_streak", 0)
     analyzer.init_db()
     return analyzer

@@ -387,3 +387,112 @@ def test_stats_endpoint_exposes_queue_and_counters(az, gemini, monkeypatch):
     assert data["runtime"]["dropped_permanent"] == 1
     assert data["runtime"]["retries_scheduled"] == 1
     assert data["upstream"]["consecutive_failures"] == 1
+
+
+# ── review follow-ups ─────────────────────────────────────────────────────────
+
+INVALID_KEY_400 = {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                             "message": "API key not valid. Please pass a valid API key.",
+                             "details": [{"reason": "API_KEY_INVALID"}]}}
+
+
+def test_invalid_key_answered_with_400_is_a_config_error(az, gemini):
+    gemini(FakeResponse(400, body=INVALID_KEY_400))
+    _, failure = az.call_gemini([{"rule_id": "1"}])
+    assert failure.kind == "config"
+    gemini(FakeResponse(400, body={"error": {"status": "FAILED_PRECONDITION",
+                                             "message": "User location is not supported"}}))
+    _, failure = az.call_gemini([{"rule_id": "1"}])
+    assert failure.kind == "config"
+
+
+def test_invalid_key_does_not_empty_the_queue(az, gemini):
+    gemini(FakeResponse(400, body=INVALID_KEY_400))
+    ids = [new_batch(az) for _ in range(4)]
+    for batch_id in ids:
+        make_due(az, batch_id)
+        run_batch(az, batch_id)
+    assert {row(az, b)["status"] for b in ids} == {"pending"}
+    assert az._stats["errors"] == 0
+
+
+def test_a_run_of_permanent_errors_stops_dropping_batches(az, gemini):
+    """One poisoned batch is dropped; many in a row means the request is wrong."""
+    gemini(FakeResponse(400, text="Request contains an invalid argument"))
+    ids = [new_batch(az) for _ in range(5)]
+    for batch_id in ids:
+        make_due(az, batch_id)
+        run_batch(az, batch_id)
+    statuses = [row(az, b)["status"] for b in ids]
+    assert statuses[:az.PERMANENT_STREAK_LIMIT - 1] == ["error"] * (az.PERMANENT_STREAK_LIMIT - 1)
+    assert "pending" in statuses[az.PERMANENT_STREAK_LIMIT - 1:]
+    assert az._stats["dropped_permanent"] == az.PERMANENT_STREAK_LIMIT - 1
+
+
+def test_success_resets_the_permanent_streak(az, gemini):
+    gemini(FakeResponse(400, text="bad"), gemini_ok(), FakeResponse(400, text="bad"),
+           FakeResponse(400, text="bad"))
+    ids = [new_batch(az) for _ in range(4)]
+    for batch_id in ids:
+        make_due(az, batch_id)
+        run_batch(az, batch_id)
+    assert [row(az, b)["status"] for b in ids] == ["error", "done", "error", "error"]
+
+
+def test_quota_wait_clears_the_expiry_clock(az, gemini, monkeypatch):
+    """503 on day 1, three days of waiting for quota, then one more 503: not expired."""
+    gemini(FakeResponse(503, text="x"), FakeResponse(429, body={"error": {"message": "quota"}}),
+           FakeResponse(503, text="x"))
+    batch_id = new_batch(az)
+    t0 = az._now()
+    run_batch(az, batch_id)
+    assert row(az, batch_id)["first_error_at"]
+    make_due(az, batch_id)
+    run_batch(az, batch_id)                                 # 429
+    assert row(az, batch_id)["first_error_at"] is None
+    monkeypatch.setattr(az, "_now", lambda: t0 + 3 * 86400)
+    make_due(az, batch_id)
+    run_batch(az, batch_id)                                 # 503 again
+    assert row(az, batch_id)["status"] == "pending" and az._stats["expired"] == 0
+
+
+def test_bad_response_budget_is_not_eaten_by_quota_waits(az, gemini):
+    gemini(FakeResponse(429, body={"error": {"message": "quota"}}),
+           FakeResponse(429, body={"error": {"message": "quota"}}),
+           FakeResponse(200, text="garbage"))
+    batch_id = new_batch(az)
+    for _ in range(3):
+        make_due(az, batch_id)
+        run_batch(az, batch_id)
+    r = row(az, batch_id)
+    assert r["attempts"] == 3 and r["bad_responses"] == 1 and r["status"] == "pending"
+
+
+def test_live_batches_are_retried_before_old_history(az, gemini):
+    fake = gemini(gemini_ok())
+    old = az._store_batch([ALERT], "history")[0]
+    live = new_batch(az)
+    for b in (old, live):
+        with az._db() as conn:
+            conn.execute("UPDATE batches SET status='pending', next_attempt=0 WHERE id=?", (b,))
+    az._retry_once()
+    assert row(az, live)["status"] == "done" and row(az, old)["status"] == "pending"
+
+
+@pytest.mark.parametrize("header", ["inf", "nan", "-5", "1e12", "Wed, 21 Oct 2026 07:28:00 GMT"])
+def test_hostile_retry_after_cannot_close_the_gate_forever(az, gemini, header):
+    gemini(FakeResponse(429, body={"error": {"message": "quota"}}, headers={"Retry-After": header}))
+    az.call_gemini([{"rule_id": "1"}])
+    assert 0 < az.quota.wait_seconds() <= 86400 + 1
+
+
+def test_unexpected_answer_shape_is_stored_not_retried(az, gemini):
+    fake = gemini(gemini_ok({"summary": "s", "overall_risk": ["x"], "findings": [
+        "nonsense", {"title": "ok", "severity": ["high"], "affected_agents": "ct100", "rule_ids": None}]}))
+    batch_id = new_batch(az)
+    run_batch(az, batch_id)
+    r = row(az, batch_id)
+    assert r["status"] == "done" and r["overall_risk"] == "unknown" and fake.calls == 1
+    with az._db() as conn:
+        f = conn.execute("SELECT * FROM findings WHERE batch_id=?", (batch_id,)).fetchone()
+    assert f["severity"] == "info" and json.loads(f["affected_agents"]) == []

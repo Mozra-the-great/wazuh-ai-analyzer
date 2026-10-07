@@ -56,9 +56,9 @@ Bei Fehlern (429, 5xx, Timeout, Verbindungsfehler):
 |---|---|
 | 429 (Quota/Rate-Limit) | Batch wartet bis zum Quota-Reset, läuft nie ab |
 | HTTP 5xx / 408, Timeout, Verbindungsfehler | Backoff 1 min → 1 h (mit Jitter); nach `RETRY_MAX_AGE_HOURS` ohne Erfolg → `error` |
-| HTTP 401 / 403 / 404 (Key oder Modell falsch) | wie oben, die Batches bleiben für den Betreiber erhalten, bis der Key korrigiert ist |
+| HTTP 401 / 403 / 404, 400 mit `API_KEY_INVALID` / `FAILED_PRECONDITION` (Key, Region oder Modell falsch) | wie oben, die Batches bleiben für den Betreiber erhalten, bis der Key korrigiert ist |
 | Unlesbare Gemini-Antwort | max. `RETRY_BAD_RESPONSE_MAX` Versuche, dann `error` |
-| anderer 4xx (z. B. 400) | sofort `error` – Wiederholen ändert nichts. Wird geloggt (`verworfen (dropped_permanent=N)`) und gezählt |
+| anderer 4xx (z. B. 400) | sofort `error` – Wiederholen ändert nichts. Wird geloggt (`verworfen (dropped_permanent=N)`) und gezählt. Ab dem 3. Batch in Folge wird nicht mehr verworfen, sondern wie ein Konfigurationsfehler geparkt |
 
 Nach einem Fehler sperrt ein gemeinsames Backoff **alle** Gemini-Aufrufe (nicht nur den
 betroffenen Batch), damit ein Ausfall das Tageskontingent nicht mit Proben verbrennt.

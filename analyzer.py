@@ -7,6 +7,7 @@ Erstellt mithilfe von KI (Claude by Anthropic)
 
 import html
 import json
+import math
 import os
 import random
 import sqlite3
@@ -553,14 +554,14 @@ _inflight_lock = threading.Lock()
 _gemini_slot   = threading.BoundedSemaphore(GEMINI_CONCURRENCY)
 
 def _set_pending(batch_id: int, next_attempt: float, message: str,
-                 attempts: int, first_error_at=None):
+                 attempts: int, first_error_at, bad_responses: int):
     with _db() as conn:
         conn.execute(
             """UPDATE batches
                SET status='pending', next_attempt=?, last_error=?, attempts=?,
-                   first_error_at=COALESCE(first_error_at, ?)
+                   first_error_at=?, bad_responses=?
                WHERE id=?""",
-            (next_attempt, message, attempts, first_error_at, batch_id)
+            (next_attempt, message, attempts, first_error_at, bad_responses, batch_id)
         )
 
 def _defer_batch(batch_id: int, delay: float):
@@ -585,40 +586,63 @@ def _drop_batch(batch_id: int, reason: str, counter: str, attempts: int = 0):
         total = _stats[counter]
     log.error(f"Batch {batch_id} verworfen ({counter}={total}): {reason}")
 
+# Consecutive batches dropped as 'permanent'. A genuinely bad payload hits one
+# batch; many in a row mean the request itself is wrong (key, region, model)
+# and the queue must not be emptied into the error state.
+_permanent_streak      = 0
+PERMANENT_STREAK_LIMIT = 3
+
+def _reset_permanent_streak():
+    global _permanent_streak
+    _permanent_streak = 0
+
 def _handle_failure(batch_id: int, failure: GeminiFailure):
+    global _permanent_streak
     now     = _now()
     message = _RedactSecrets.scrub(failure.message)[:300]
     with _db() as conn:
         row = conn.execute(
-            "SELECT attempts, first_error_at FROM batches WHERE id=?", (batch_id,)
+            "SELECT attempts, first_error_at, bad_responses FROM batches WHERE id=?", (batch_id,)
         ).fetchone()
     attempts       = (row["attempts"] if row else 0) + 1
     first_error_at = row["first_error_at"] if row else None
+    bad_responses  = row["bad_responses"] if row else 0
+    kind           = failure.kind
 
-    if failure.kind == "permanent":
-        _drop_batch(batch_id, f"permanent: {message}", "dropped_permanent", attempts)
-        return
+    if kind == "permanent":
+        _permanent_streak += 1
+        if _permanent_streak >= PERMANENT_STREAK_LIMIT:
+            log.error(f"{_permanent_streak} Batches in Folge mit permanentem Fehler – "
+                      f"vermutlich ist die Konfiguration falsch, Batch {batch_id} wird nicht verworfen")
+            kind = "config"
+        else:
+            _drop_batch(batch_id, f"permanent: {message}", "dropped_permanent", attempts)
+            return
+    else:
+        _permanent_streak = 0
 
-    if failure.kind == "quota":
+    if kind == "quota":
         # Waiting for the quota reset is not a failure of the batch: it keeps
-        # its place in the queue for as long as it takes.
+        # its place in the queue for as long as it takes, and the API answered,
+        # so an earlier outage no longer counts towards the expiry.
         next_attempt = max(quota.retry_at or now, now)
-        _set_pending(batch_id, next_attempt, message, attempts)
+        _set_pending(batch_id, next_attempt, message, attempts, None, bad_responses)
         _inc("retries_scheduled")
         log.warning(f"Batch {batch_id} pausiert wegen Quota-Erschoepfung "
                     f"(erneut in {int(next_attempt - now)}s)")
         return
 
-    if failure.kind == "bad_response":
-        if attempts >= RETRY_BAD_RESPONSE_MAX:
-            _drop_batch(batch_id, f"bad_response nach {attempts} Versuchen: {message}",
+    if kind == "bad_response":
+        bad_responses += 1
+        if bad_responses >= RETRY_BAD_RESPONSE_MAX:
+            _drop_batch(batch_id, f"bad_response nach {bad_responses} Versuchen: {message}",
                         "dropped_bad_response", attempts)
             return
     else:   # transient / config
         started = _parse_iso(first_error_at) or now
         if now - started > RETRY_MAX_AGE_HOURS * 3600:
             _drop_batch(batch_id,
-                        f"seit {RETRY_MAX_AGE_HOURS:g}h nicht analysierbar ({failure.kind}): {message}",
+                        f"seit {RETRY_MAX_AGE_HOURS:g}h nicht analysierbar ({kind}): {message}",
                         "expired", attempts)
             return
         if first_error_at is None:
@@ -626,9 +650,9 @@ def _handle_failure(batch_id: int, failure: GeminiFailure):
         upstream.mark_failure(message, failure.retry_after)
 
     next_attempt = now + max(_backoff_delay(attempts), upstream.wait_seconds())
-    _set_pending(batch_id, next_attempt, message, attempts, first_error_at)
+    _set_pending(batch_id, next_attempt, message, attempts, first_error_at, bad_responses)
     _inc("retries_scheduled")
-    log.warning(f"Batch {batch_id}: {failure.kind} ({message}) – Versuch {attempts}, "
+    log.warning(f"Batch {batch_id}: {kind} ({message}) – Versuch {attempts}, "
                 f"erneut in {int(next_attempt - now)}s")
 
 def _requeue_stale(older_than: float) -> int:
@@ -663,7 +687,7 @@ def _retry_once() -> bool:
         row = conn.execute(
             "SELECT id, raw_groups, source FROM batches "
             "WHERE status='pending' AND COALESCE(next_attempt, 0) <= ? "
-            "ORDER BY COALESCE(next_attempt, 0), id LIMIT 1", (now,)
+            "ORDER BY (source = 'live') DESC, COALESCE(next_attempt, 0), id LIMIT 1", (now,)
         ).fetchone()
         if row is None:
             return False
@@ -725,6 +749,7 @@ _BATCH_RETRY_COLUMNS = (
     ("first_error_at", "TEXT"),
     ("last_error",     "TEXT"),
     ("claimed_at",     "REAL"),
+    ("bad_responses",  "INTEGER NOT NULL DEFAULT 0"),
 )
 
 def _migrate_schema(conn: sqlite3.Connection):
@@ -757,7 +782,8 @@ def init_db():
                 next_attempt  REAL,
                 first_error_at TEXT,
                 last_error    TEXT,
-                claimed_at    REAL
+                claimed_at    REAL,
+                bad_responses INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS findings (
@@ -1112,9 +1138,24 @@ Sortiere findings nach Schwere (kritischstes zuerst).\
 def _retry_after_seconds(resp) -> float:
     """Numeric Retry-After header in seconds; 0 if absent or an HTTP date."""
     try:
-        return max(0.0, float(resp.headers.get("Retry-After", 0)))
+        value = float(resp.headers.get("Retry-After", 0))
     except (TypeError, ValueError):
         return 0.0
+    return min(value, 86400.0) if math.isfinite(value) and value > 0 else 0.0
+
+def _is_config_error_body(resp) -> bool:
+    """Gemini reports an invalid/expired key and unsupported regions as HTTP 400
+    (API_KEY_INVALID / FAILED_PRECONDITION), not as 401/403 - but those are
+    problems of the setup, not of the batch."""
+    try:
+        err = resp.json().get("error", {})
+        reasons = {d.get("reason") for d in err.get("details", []) if isinstance(d, dict)}
+        text = str(err.get("message", "")).lower()
+    except Exception:
+        text = resp.text.lower()
+        reasons, err = set(), {}
+    return (err.get("status") == "FAILED_PRECONDITION" or "API_KEY_INVALID" in reasons
+            or "api key" in text or "location is not supported" in text)
 
 def call_gemini(groups: list) -> tuple:
     """
@@ -1167,6 +1208,8 @@ def call_gemini(groups: list) -> tuple:
                 # Key revoked / wrong model: every batch fails alike, and the
                 # operator can fix it. Do not throw the queue away meanwhile.
                 return None, GeminiFailure("config", msg)
+            if code == 400 and _is_config_error_body(resp):
+                return None, GeminiFailure("config", msg)
             upstream.mark_success()   # reachable - this payload is the problem
             return None, GeminiFailure("permanent", msg)
 
@@ -1218,6 +1261,8 @@ def _do_gemini_and_save(batch_id: int, groups: list, source: str = "live", is_re
             _handle_failure(batch_id, failure)
             return
         _save_result(batch_id, result, source, is_retry)
+        global _permanent_streak
+        _permanent_streak = 0
         if is_retry:
             _inc("retries_succeeded")
     except Exception as exc:
@@ -1238,13 +1283,19 @@ def _save_result(batch_id: int, result: dict, source: str, is_retry: bool):
     _VALID_SEV  = {"critical", "high", "medium", "low", "info"}
 
     raw_risk = result.get("overall_risk", "unknown")
-    safe_risk = raw_risk if raw_risk in _VALID_RISK else "unknown"
+    safe_risk = raw_risk if isinstance(raw_risk, str) and raw_risk in _VALID_RISK else "unknown"
     if safe_risk != raw_risk:
         log.warning(f"Ungueltiger overall_risk Wert vom LLM: {raw_risk!r} → 'unknown'")
 
+    # The answer is valid JSON but not necessarily the schema we asked for.
+    # Sending the same prompt again would not fix that, so store what is usable.
     findings = result.get("findings", [])
+    findings = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
     log.info(f"[{'retry' if is_retry else source}] Batch {batch_id}: "
              f"Risiko={safe_risk} | {len(findings)} Findings")
+
+    def _list(value, limit):
+        return value[:limit] if isinstance(value, list) else []
 
     with _db() as conn:
         conn.execute(
@@ -1254,7 +1305,7 @@ def _save_result(batch_id: int, result: dict, source: str, is_retry: bool):
         )
         for f in findings:
             raw_sev = f.get("severity", "info")
-            safe_sev = raw_sev if raw_sev in _VALID_SEV else "info"
+            safe_sev = raw_sev if isinstance(raw_sev, str) and raw_sev in _VALID_SEV else "info"
             conn.execute(
                 """INSERT INTO findings
                    (batch_id, title, severity, description, recommendation, affected_agents, rule_ids)
@@ -1265,8 +1316,8 @@ def _save_result(batch_id: int, result: dict, source: str, is_retry: bool):
                     safe_sev,
                     str(f.get("description", ""))[:5000],
                     str(f.get("recommendation", ""))[:5000],
-                    json.dumps(f.get("affected_agents", [])[:20]),
-                    json.dumps(f.get("rule_ids", [])[:50]),
+                    json.dumps(_list(f.get("affected_agents"), 20)),
+                    json.dumps(_list(f.get("rule_ids"), 50)),
                 )
             )
 
