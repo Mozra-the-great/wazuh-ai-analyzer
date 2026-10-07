@@ -20,7 +20,7 @@ Kostenlos nutzbar mit dem Google AI Studio Free Tier (1.500 Anfragen/Tag).
 - 🔴 **Live-Überwachung** – verfolgt `alerts.json` kontinuierlich und analysiert neue Alerts automatisch
 - ⏳ **Intelligentes Batching** – sammelt Alerts und sendet sie gebündelt, um API-Tokens zu sparen
 - ⚠️ **Quota-Handling** – pausiert bei erschöpftem Gemini-Kontingent, zeigt Countdown im Dashboard und macht automatisch weiter
-- 🔁 **Retry-Queue** – bei Quota-Erschöpfung werden Batches geparkt und später erneut gesendet, kein Datenverlust
+- 🔁 **Persistente Retry-Queue** – bei Quota-Erschöpfung, HTTP 5xx, Timeouts und Verbindungsfehlern werden Batches in der Datenbank geparkt und mit exponentiellem Backoff erneut gesendet; ein Neustart verliert nichts
 - 🌐 **Web-Dashboard** – Severity-Filter, Live/Historisch-Tabs, Klick-Detail mit Erklärung und Handlungsempfehlung
 - 🧠 **Infra-Kontext** – beschreibe deine Infrastruktur einmalig beim Setup, Gemini gibt passendere Empfehlungen
 - 🛡️ **Gehärtete Architektur** – dedizierter unprivilegierter Service-User, WAL-Modus für SQLite, ProxyFix für korrekte IPs hinter Reverse Proxies, LLM-Output-Whitelist gegen Prompt Injection
@@ -43,14 +43,29 @@ Wazuh alerts.json
   SQLite (WAL-Modus)  →  REST-API  →  Web-Dashboard
 ```
 
-Bei Quota-Erschöpfung (429):
+Bei Fehlern (429, 5xx, Timeout, Verbindungsfehler):
 ```
-  Gemini 429
+  Gemini-Fehler
       ↓
-  Batch → Retry-Queue  (kein Datenverlust)
-      ↓  (Retry-Worker prüft alle 30s)
-  Quota frei → automatische Wiederholung
+  Batch → status='pending' + next_attempt   (in SQLite, übersteht Neustarts)
+      ↓  (Retry-Worker prüft alle 30s, ein Batch alle 10s)
+  Backoff + Quota abgelaufen → automatische Wiederholung → 'done'
 ```
+
+| Fehler | Verhalten |
+|---|---|
+| 429 (Quota/Rate-Limit) | Batch wartet bis zum Quota-Reset, läuft nie ab |
+| HTTP 5xx / 408, Timeout, Verbindungsfehler | Backoff 1 min → 1 h (mit Jitter); nach `RETRY_MAX_AGE_HOURS` ohne Erfolg → `error` |
+| HTTP 401 / 403 / 404, 400 mit `API_KEY_INVALID` / `FAILED_PRECONDITION` (Key, Region oder Modell falsch) | wie oben, die Batches bleiben für den Betreiber erhalten, bis der Key korrigiert ist |
+| Unlesbare Gemini-Antwort | max. `RETRY_BAD_RESPONSE_MAX` Versuche, dann `error` |
+| anderer 4xx (z. B. 400) | sofort `error` – Wiederholen ändert nichts. Wird geloggt (`verworfen (dropped_permanent=N)`) und gezählt. Ab dem 3. Batch in Folge wird nicht mehr verworfen, sondern wie ein Konfigurationsfehler geparkt |
+
+Nach einem Fehler sperrt ein gemeinsames Backoff **alle** Gemini-Aufrufe (nicht nur den
+betroffenen Batch), damit ein Ausfall das Tageskontingent nicht mit Proben verbrennt.
+Beim Start werden Batches, die noch auf `analyzing` standen, wieder eingereiht.
+`/api/stats` liefert dazu `batches` (Anzahl je Status), `retry_queue_size`, `upstream` und die
+Zähler `runtime.retries_scheduled`, `retries_succeeded`, `dropped_permanent`,
+`dropped_bad_response`, `expired`, `recovered_stale`.
 
 ---
 
@@ -114,6 +129,13 @@ systemctl restart wazuh-ai-analyzer
 | `HISTORY_PAUSE` | `8` | Sekunden Pause zwischen historischen Batches |
 | `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini Modell |
 | `GEMINI_TEMPERATURE` | `0.15` | Kreativität der KI-Antworten (0.0–1.0, niedriger = deterministischer) |
+| `RETRY_BASE_DELAY` | `60` | Start-Backoff in Sekunden nach einem Fehler (verdoppelt sich pro Versuch) |
+| `RETRY_MAX_DELAY` | `3600` | Obergrenze des Backoffs in Sekunden |
+| `RETRY_MAX_AGE_HOURS` | `72` | Nach dieser Zeit ununterbrochener 5xx-/Netzfehler wird ein Batch `error` (Quota-Wartezeit zählt nicht) |
+| `RETRY_BAD_RESPONSE_MAX` | `3` | Versuche bei unlesbarer Gemini-Antwort |
+| `RETRY_POLL` / `RETRY_PACE` | `30` / `10` | Retry-Worker: Prüfintervall im Leerlauf / Pause zwischen zwei Wiederholungen (Sekunden) |
+| `STALE_ANALYZING_SECONDS` | `900` | Batches, die so lange unbearbeitet auf `analyzing` stehen, werden wieder eingereiht |
+| `GEMINI_CONCURRENCY` | `2` | Gleichzeitige Gemini-Anfragen |
 | `INFRA_CONTEXT` | `a self-hosted Linux server environment` | Infrastruktur-Beschreibung für Gemini |
 | `PORT` | `8765` | Web-Dashboard Port |
 | `LISTEN_HOST` | `127.0.0.1` | Bind-Adresse (`0.0.0.0` nur hinter HTTPS-Proxy) |
@@ -188,7 +210,7 @@ Das Dashboard aktualisiert sich automatisch alle 20 Sekunden.
 - 🟢 **Gemini OK** – Analyse läuft normal
 - 🔴 **Quota leer** – roter Banner mit Countdown und automatischem Resume
 - ⏳ **N gepuffert** – Alerts im Puffer, noch nicht gesendet
-- 🔁 **N warten** – Batches in der Retry-Queue (nach Quota-Fehler)
+- 🔁 **N warten** – Batches in der Retry-Queue (nach Quota- oder Verbindungsfehler)
 - **Abmelden** – Button oben rechts
 
 **Quota-Banner (erscheint automatisch bei 429):**
@@ -338,7 +360,7 @@ Nginx-Konfiguration wie im Abschnitt "Als Subdomain verfügbar machen" oben.
 | Auth | Session-basiert, pbkdf2:sha256, Brute-Force-Schutz |
 | Proxy-Support | Werkzeug ProxyFix (X-Forwarded-For) |
 | Log-Rotation | Inode-basierter Watcher, automatisches Reopen |
-| Quota-Handling | Retry-Queue mit automatischem Resume |
+| Fehlerbehandlung | Persistente Retry-Queue (SQLite) mit Backoff und automatischem Resume |
 | Historische Analyse | Watermark-basiert, resumable nach Neustart |
 
 ---
