@@ -5,6 +5,7 @@ Analysiert Wazuh-Alerts mit Google Gemini AI und zeigt sie im Web-Dashboard.
 Erstellt mithilfe von KI (Claude by Anthropic)
 """
 
+import gzip
 import html
 import json
 import math
@@ -17,8 +18,9 @@ import requests
 import logging
 import glob
 import re
+import zlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
 import hashlib
@@ -813,22 +815,271 @@ def init_db():
         _restrict(Path(f"{DB_PATH}{suffix}"), DATA_FILE_MODE)
     log.info("Datenbank initialisiert (WAL-Modus aktiv)")
 
-# ─── Watermark ────────────────────────────────────────────────────────────────
-def load_watermark() -> dict:
-    if WATERMARK_FILE.exists():
-        try:
-            return json.loads(WATERMARK_FILE.read_text())
-        except Exception:
-            pass
-    return {}
+# ─── Watermark (nach Dateiidentitaet, #44) ────────────────────────────────────
+# Wazuh rotiert alerts.json taeglich: die Datei wird zu
+# alerts/YYYY/Mon/ossec-alerts-DD.json.gz, alerts.json beginnt neu. Eine
+# Wasserzeichen-Zeilennummer pro *Pfad* ist danach falsch (ueberspringt den Anfang der
+# neuen Datei bzw. liest die alte doppelt). Stattdessen wird die Lesestelle an die
+# *Datei* gebunden:
+#
+#   live     Wo der Live-Watcher in alerts.json steht: dev/inode, Byte-Offset und
+#            ein Hash der ersten Zeile. Der Hash ueberlebt Umbenennen, Hardlink und
+#            Komprimieren (neuer Inode!), Inode und Offset allein nicht.
+#   backlog  Abschnitte, die noch nachgeholt werden muessen (Reste rotierter Dateien,
+#            Tage Ausfallzeit, beim Start Gelesenes), je Datei/Offset/Ende.
+#
+# Der Live-Cursor wird erst nach dem Speichern des Batches fortgeschrieben, in
+# dem die Alerts stehen: ein Absturz liest hoechstens neu, verliert aber nichts.
+HEAD_LINE_MAX     = 64 * 1024
+WATERMARK_VERSION = 2
+# Mindestabstand zwischen zwei Leerlauf-Commits des Live-Cursors (Sekunden).
+WATERMARK_IDLE_COMMIT = 5.0
+_MONTHS      = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_DATED_RE    = re.compile(r"^ossec-alerts-(\d{2})\.json(\.gz)?$")
+_SKIP_SUFFIX = (".sum", ".sig", ".md5", ".sha256", ".tmp")
 
-def save_watermark(data: dict):
-    # os.open() applies the mode only when the file is created, so an existing
-    # file from an earlier install still needs the explicit _restrict() below.
-    fd = os.open(WATERMARK_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, DATA_FILE_MODE)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(json.dumps(data, indent=2))
-    _restrict(WATERMARK_FILE, DATA_FILE_MODE)
+
+def _open_alert_file(path: str):
+    return gzip.open(path, "rb") if path.endswith(".gz") else open(path, "rb")
+
+def _line_digest(line: bytes) -> str:
+    return hashlib.sha256(line[:HEAD_LINE_MAX].rstrip(b"\r\n")).hexdigest()
+
+def _first_line_digest(f, closed: bool) -> str:
+    """Digest of the first line of an open binary file, or None if there is no
+    complete line yet. A live file may end in a half-written line (closed=False);
+    a rotated one will not get any more data, so its last line counts."""
+    f.seek(0)
+    line = f.readline(HEAD_LINE_MAX)
+    if not line:
+        return None
+    if not (line.endswith(b"\n") or len(line) >= HEAD_LINE_MAX or closed):
+        return None
+    return _line_digest(line)
+
+def _file_head_digest(path: str):
+    try:
+        with _open_alert_file(path) as f:
+            return _first_line_digest(f, closed=True)
+    except (OSError, EOFError, zlib.error):
+        return None
+
+def _last_line_boundary(f, lo: int, hi: int) -> int:
+    """Start offset of the first line that is not complete in [lo, hi): the
+    position right after the last newline, or lo if there is none."""
+    pos = hi
+    while pos > lo:
+        start = max(lo, pos - 64 * 1024)
+        f.seek(start)
+        idx = f.read(pos - start).rfind(b"\n")
+        if idx >= 0:
+            return start + idx + 1
+        pos = start
+    return lo
+
+def _date_of(ts: float) -> date:
+    """Local calendar day - Wazuh names its archives after the manager's local date."""
+    return datetime.fromtimestamp(ts).date()
+
+def list_dated_archives(exclude=None) -> list:
+    """[(day, path)] of Wazuh's rotated JSON alerts, oldest first.
+
+    While a day is running, alerts.json is a hard link of that day's
+    ossec-alerts-DD.json; passing the live file's (dev, inode) as `exclude` keeps
+    it from being read twice. Text-format (.log) archives are ignored."""
+    root  = Path(ALERTS_LOG).parent
+    found = {}
+    try:
+        year_dirs = [d for d in root.iterdir() if d.name.isdigit() and len(d.name) == 4 and d.is_dir()]
+        for ydir in year_dirs:
+            for mdir in ydir.iterdir():
+                if mdir.name not in _MONTHS or not mdir.is_dir():
+                    continue
+                for entry in mdir.iterdir():
+                    m = _DATED_RE.match(entry.name)
+                    if not m:
+                        continue
+                    try:
+                        day = date(int(ydir.name), _MONTHS.index(mdir.name) + 1, int(m.group(1)))
+                        st  = entry.stat()
+                    except (ValueError, OSError):
+                        continue
+                    if exclude is not None and (st.st_dev, st.st_ino) == exclude:
+                        continue
+                    previous = found.get(day)
+                    # Prefer the plain file: a .gz of the same day may still be written.
+                    if previous is None or (previous.endswith(".gz") and not m.group(2)):
+                        found[day] = str(entry)
+    except OSError as exc:
+        log.warning(f"Archivverzeichnis {root} nicht lesbar: {exc}")
+    return sorted(found.items())
+
+def find_sibling_files(exclude=None) -> list:
+    """Files next to alerts.json (alerts.json.1, alerts.json.gz ...), oldest first."""
+    base = str(ALERTS_LOG)
+    out  = []
+    for path in glob.glob(base + "*"):
+        if path == base or path.endswith(_SKIP_SUFFIX) or not os.path.isfile(path):
+            continue
+        st = os.stat(path)
+        if exclude is not None and (st.st_dev, st.st_ino) == exclude:
+            continue
+        out.append((st.st_mtime, path))
+    return [path for _, path in sorted(out)]
+
+def _find_previous_file(saved: dict):
+    """The rotated copy of the file the live cursor pointed at: (path, day) or None.
+
+    Matched by the hash of its first line - inodes are useless here, compressing
+    creates a new one and freed inodes get reused. Archives around the day of the
+    last commit come first, then everything else, newest first."""
+    saved_day  = _date_of(saved["ts"])
+    archives   = list_dated_archives()
+    near       = [a for a in archives if a[0] >= saved_day - timedelta(days=1)]
+    far        = [a for a in reversed(archives) if a[0] < saved_day - timedelta(days=1)]
+    siblings   = [(saved_day, p) for p in find_sibling_files()]
+    for day, path in siblings + near + far:
+        if _file_head_digest(path) == saved["head"]:
+            return path, day
+    return None
+
+
+def _fsync_dir(path: Path):
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return                    # not supported (e.g. Windows) - best effort
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _valid_cursor(c) -> bool:
+    return (isinstance(c, dict) and isinstance(c.get("path"), str)
+            and isinstance(c.get("dev"), int) and isinstance(c.get("ino"), int)
+            and isinstance(c.get("offset"), int) and c["offset"] >= 0
+            and (c.get("head") is None or isinstance(c["head"], str))
+            and isinstance(c.get("ts"), (int, float)))
+
+def _valid_segment(s) -> bool:
+    return (isinstance(s, dict) and isinstance(s.get("id"), int) and isinstance(s.get("path"), str)
+            and isinstance(s.get("offset"), int) and s["offset"] >= 0
+            and (s.get("end") is None or isinstance(s["end"], int))
+            and (s.get("head") is None or isinstance(s["head"], str)))
+
+
+class WatermarkStore:
+    """Persistent ingest position (watermark.json, format version 2).
+
+    Written atomically (temp file, fsync, rename) and only ever by this class,
+    which the live watcher and the backlog worker share."""
+    def __init__(self, path: Path):
+        self.path     = Path(path)
+        self._lock    = threading.Lock()
+        self.live     = None     # cursor dict of the live file, None = never started
+        self.backlog  = []       # segments still to analyse, oldest first
+        self.next_id  = 1
+        # True when the file held the old {path: line number} format, or something
+        # unreadable: the real position is unknown and the planner starts at the end
+        # of the file instead of re-analysing it.
+        self.legacy   = False
+
+    def load(self):
+        with self._lock:
+            self.live, self.backlog, self.next_id, self.legacy = None, [], 1, False
+            if not self.path.exists():
+                return
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                self._set_aside("corrupt", f"nicht lesbar ({exc})")
+                return
+            if isinstance(data, dict) and "version" not in data and all(
+                    isinstance(v, int) for v in data.values()):
+                self._set_aside("v1.bak", "altes Zeilennummern-Format (pro Pfad)", rename=False)
+                return
+            backlog = data.get("backlog", []) if isinstance(data, dict) else None
+            live    = data.get("live")        if isinstance(data, dict) else None
+            if (not isinstance(data, dict) or data.get("version") != WATERMARK_VERSION
+                    or not (live is None or _valid_cursor(live))
+                    or not isinstance(backlog, list) or not all(_valid_segment(s) for s in backlog)
+                    or not isinstance(data.get("next_id", 1), int)):
+                self._set_aside("corrupt", "unbekanntes Format")
+                return
+            self.live, self.backlog, self.next_id = live, backlog, data.get("next_id", 1)
+
+    def _set_aside(self, suffix: str, why: str, rename: bool = True):
+        """Keep the unusable file for inspection (owner-only) and start from the end."""
+        target = self.path.with_name(self.path.name + "." + suffix)
+        try:
+            if rename:
+                os.replace(self.path, target)
+            else:
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, DATA_FILE_MODE)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(self.path.read_bytes())
+                _restrict(target, DATA_FILE_MODE)
+        except OSError as exc:
+            log.warning(f"Konnte {self.path.name} nicht nach {target.name} sichern: {exc}")
+        self.legacy = True
+        log.warning(f"Watermark {why} – Kopie: {target.name}; Lesestelle startet am Dateiende, "
+                    f"vorhandene Alerts werden nicht erneut analysiert")
+
+    def _save_locked(self):
+        payload = {"version": WATERMARK_VERSION, "live": self.live, "backlog": self.backlog,
+                   "next_id": self.next_id, "updated_at": _iso(_now())}
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        # os.open() applies the mode only when the file is created.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, DATA_FILE_MODE)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.path)
+        _fsync_dir(self.path.parent)
+        _restrict(self.path, DATA_FILE_MODE)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"live": dict(self.live) if self.live else None,
+                    "backlog": [dict(s) for s in self.backlog], "legacy": self.legacy}
+
+    def commit_live(self, cursor: dict):
+        with self._lock:
+            self.live = dict(cursor, ts=_now())
+            self._save_locked()
+
+    def apply_plan(self, cursor: dict, segments: list):
+        with self._lock:
+            for seg in segments:
+                self.backlog.append(dict(seg, id=self.next_id))
+                self.next_id += 1
+            self.live   = dict(cursor, ts=_now())
+            self.legacy = False
+            self._save_locked()
+
+    def first_segment(self):
+        with self._lock:
+            return dict(self.backlog[0]) if self.backlog else None
+
+    def advance_segment(self, seg_id: int, offset: int):
+        with self._lock:
+            for seg in self.backlog:
+                if seg["id"] == seg_id:
+                    seg["offset"] = max(seg["offset"], offset)
+            self._save_locked()
+
+    def finish_segment(self, seg_id: int):
+        with self._lock:
+            self.backlog = [s for s in self.backlog if s["id"] != seg_id]
+            self._save_locked()
+
+
+watermark = WatermarkStore(WATERMARK_FILE)
 
 # ─── Runtime-Statistiken ──────────────────────────────────────────────────────
 stats_lock = threading.Lock()
@@ -875,19 +1126,57 @@ def _handle_line(line: str, source: str = "live") -> bool:
     except Exception:
         return False
 
+class _LiveCursor:
+    """Where the live watcher is in the log. Only the watcher thread moves it;
+    _flush() commits it to the watermark once the batch containing everything
+    read so far is stored."""
+    def __init__(self):
+        self.value      = None
+        self.committed  = None
+        self.last_commit = 0.0
+
+    def set(self, path: str, dev: int, ino: int, offset: int, head):
+        self.value = {"path": path, "dev": dev, "ino": ino, "offset": offset, "head": head}
+
+    def dirty(self) -> bool:
+        return self.value is not None and self.value != self.committed
+
+    def commit(self):
+        if self.value is None:
+            return
+        try:
+            watermark.commit_live(self.value)
+        except OSError as exc:
+            # The batch is stored; the cost of a lost commit is re-reading a few
+            # lines after the next restart, so keep running.
+            log.error(f"Watermark konnte nicht gespeichert werden: {exc}")
+            return
+        self.committed   = dict(self.value)
+        self.last_commit = time.time()
+
+live_cursor = _LiveCursor()
+
 def _flush(source: str = "live"):
-    global last_flush_ts, alert_buffer
+    global last_flush_ts
     if not alert_buffer:
         return
-    batch  = alert_buffer.copy()
+    batch = list(alert_buffer)
+    try:
+        batch_id, groups = _store_batch(batch, source)
+    except Exception:
+        # Keep the alerts and the old cursor: the next flush tries again.
+        log.exception("Batch konnte nicht gespeichert werden – Alerts bleiben im Puffer")
+        last_flush_ts = time.time()
+        return
     alert_buffer.clear()
     last_flush_ts = time.time()
     _inc("batches_sent")
-    t = threading.Thread(
-        target=analyze_batch, args=(batch, source),
+    if source == "live":
+        live_cursor.commit()
+    threading.Thread(
+        target=_do_gemini_and_save, args=(batch_id, groups, source),
         daemon=True, name=f"gemini-{source}"
-    )
-    t.start()
+    ).start()
 
 def _store_batch(alerts: list, source: str) -> tuple:
     """Persist a batch as 'analyzing' before Gemini is contacted. From here on
@@ -903,88 +1192,120 @@ def _store_batch(alerts: list, source: str) -> tuple:
         batch_id = cur.lastrowid
     return batch_id, groups
 
-# ─── Historische Analyse ──────────────────────────────────────────────────────
-def find_alert_files() -> list:
-    base    = Path(ALERTS_LOG)
-    pattern = str(base.parent / "alerts.json*")
-    files   = sorted(glob.glob(pattern), key=lambda p: os.path.getmtime(p))
-    if str(base) in files:
-        files.remove(str(base))
-        files.append(str(base))
-    return files
+# ─── Start: gespeicherte Lesestelle mit dem Dateisystem abgleichen ────────────
+plan_ready = threading.Event()
 
-def historical_scan():
-    """
-    Scannt alle vorhandenen Alert-Logs von Anfang an.
-    Macht nahtlos weiter wo ein frueherer Lauf aufgehoert hat (Watermark).
-    Pausiert automatisch bei Quota-Erschoepfung und macht danach weiter.
-    """
-    wm    = load_watermark()
-    files = find_alert_files()
-    _set("history_files_total", len(files))
+def _segment(path: str, offset: int, end, head) -> dict:
+    return {"path": path, "offset": offset, "end": end, "head": head}
 
-    if not files:
-        log.warning("Keine Alert-Log-Dateien gefunden – historische Analyse uebersprungen")
-        _set("history_done", True)
-        return
+def _archives_since(ts: float, exclude) -> list:
+    """Dated archives of the local day of `ts` or later."""
+    since = _date_of(ts)
+    return [a for a in list_dated_archives(exclude=exclude) if a[0] >= since]
 
-    log.info(f"Historische Analyse: {len(files)} Datei(en) gefunden")
+def plan_resume(f) -> dict:
+    """Reconcile the saved watermark with what is on disk, once at startup.
 
-    for filepath in files:
-        wm_line = wm.get(filepath, 0)
-        if not os.path.exists(filepath):
-            _inc("history_files_done")
-            continue
+    `f` is the opened live log. Everything that was written while we were not
+    looking becomes a backlog segment (paced and quota-aware, see
+    history_worker); the live watcher itself then starts at the current end of
+    the file. Returns the live cursor."""
+    st       = os.fstat(f.fileno())
+    ident    = (st.st_dev, st.st_ino)
+    boundary = _last_line_boundary(f, 0, st.st_size)
+    head_now = _first_line_digest(f, closed=False)
+    saved    = watermark.snapshot()
+    live     = saved["live"]
+    segments = []
 
-        log.info(f"Historisch: {filepath} (ab Zeile {wm_line})")
-        local_buf = []
-        line_num  = 0
+    if saved["legacy"]:
+        # Old line-number watermark (or an unreadable file): the position is
+        # unknown, and guessing "the start" is exactly the double analysis of #44.
+        log.info("Watermark-Migration: Live-Cursor auf das Ende von %s – nichts wird neu analysiert", ALERTS_LOG)
+    elif live is None:
+        log.info("Erster Start ohne Watermark: vorhandene Alert-Logs werden historisch analysiert")
+        for path in find_sibling_files(exclude=ident):
+            segments.append(_segment(path, 0, None, _file_head_digest(path)))
+        if boundary > 0:
+            segments.append(_segment(ALERTS_LOG, 0, boundary, head_now))
+    elif (head_now == live["head"] if live["head"] is not None
+          else (live["dev"], live["ino"]) == ident and not _archives_since(live["ts"], ident)):
+        # Same file as before: continue where we stopped. (A cursor without a
+        # first-line hash means the file was still empty. The inode alone cannot
+        # tell that file from a later one - freed inodes are reused at once - so
+        # it only counts if no archive of that day or later has appeared.)
+        start = live["offset"] if live["head"] is not None else 0
+        if st.st_size < start:
+            log.warning(f"{ALERTS_LOG} ist kleiner als die gemerkte Position ({st.st_size} < {start}) – "
+                        f"Datei wurde gekuerzt, lese von vorn")
+            start = 0
+        if boundary > start:
+            log.info(f"Nachholen: {boundary - start} Bytes in {ALERTS_LOG} seit dem letzten Stand")
+            segments.append(_segment(ALERTS_LOG, start, boundary, head_now))
+    else:
+        # The file we were reading is gone from alerts.json: Wazuh rotated it.
+        found = _find_previous_file(live) if live["head"] is not None else None
+        if found:
+            path, day = found
+            log.info(f"Rotation seit dem letzten Stand: beende {path} ab Byte {live['offset']}")
+            segments.append(_segment(path, live["offset"], None, live["head"]))
+        elif live["head"] is None:
+            # The cursor sat on an empty file, so nothing of that day was read:
+            # every archive from that day on is new to us.
+            day = _date_of(live["ts"]) - timedelta(days=1)
+        else:
+            day = _date_of(live["ts"])
+            log.warning("Rotierte Vorgaengerdatei nicht gefunden (Aufbewahrung abgelaufen?) – "
+                        "ihr Rest kann nicht nachgeholt werden")
+        for arch_day, path in list_dated_archives(exclude=ident):
+            if arch_day <= day:
+                continue
+            digest = _file_head_digest(path)
+            if head_now is not None and digest == head_now:
+                continue         # a copy of the live file (broken hard link), already planned below
+            log.info(f"Nachholen: Archiv {path}")
+            segments.append(_segment(path, 0, None, digest))
+        if boundary > 0:
+            segments.append(_segment(ALERTS_LOG, 0, boundary, head_now))
 
-        try:
-            with open(filepath, "r", errors="replace") as f:
-                for line in f:
-                    line_num += 1
-                    if line_num <= wm_line:
-                        continue
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        alert = json.loads(line)
-                        if alert.get("rule", {}).get("level", 0) < MIN_LEVEL:
-                            continue
-                        alert["_source"] = "history"
-                        local_buf.append(alert)
-                        _inc("history_alerts")
-                    except Exception:
-                        continue
+    cursor = {"path": ALERTS_LOG, "dev": st.st_dev, "ino": st.st_ino,
+              "offset": boundary, "head": head_now}
+    watermark.apply_plan(cursor, segments)
+    _inc("history_files_total", len(segments))
+    plan_ready.set()
+    return cursor
 
-                    if len(local_buf) >= HISTORY_BATCH:
-                        _wait_for_gate()
-                        _send_history_batch(local_buf[:])
-                        local_buf.clear()
-                        wm[filepath] = line_num
-                        save_watermark(wm)
-                        time.sleep(HISTORY_PAUSE)
+# ─── Backlog-Worker (frueher: historische Analyse) ────────────────────────────
+def _parse_alert(line: bytes):
+    """Alert dict if the line is JSON at or above MIN_LEVEL, else None."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        alert = json.loads(line.decode("utf-8", errors="replace"))
+        if not isinstance(alert, dict) or alert.get("rule", {}).get("level", 0) < MIN_LEVEL:
+            return None
+    except (ValueError, AttributeError, TypeError):
+        return None
+    alert["_source"] = "history"
+    return alert
 
-        except Exception as e:
-            log.error(f"Historisch: Fehler beim Lesen von {filepath}: {e}")
-            _inc("history_files_done")
-            continue
+def _locate_segment_file(seg: dict):
+    """The file a segment refers to, or None.
 
-        if local_buf:
-            _wait_for_gate()
-            _send_history_batch(local_buf)
-
-        wm[filepath] = line_num
-        save_watermark(wm)
-        _inc("history_files_done")
-        log.info(f"Historisch: {filepath} fertig ({line_num} Zeilen)")
-
-    _set("history_done", True)
-    with stats_lock:
-        done = _stats["history_alerts"]
-    log.info(f"Historische Analyse abgeschlossen: {done} Alerts verarbeitet")
+    Normally that is seg['path']. It may have been compressed since, and a
+    segment that points at alerts.json outlives midnight: the path then holds
+    the next day's file and the one we want is in the archive. Whatever is
+    found has to carry the first-line hash recorded when the segment was made."""
+    path = seg["path"]
+    for candidate in (path, path[:-3] if path.endswith(".gz") else path + ".gz"):
+        if os.path.exists(candidate) and (seg["head"] is None or _file_head_digest(candidate) == seg["head"]):
+            return candidate
+    if seg["head"] is not None:
+        found = _find_previous_file({"head": seg["head"], "ts": _now()})
+        if found:
+            return found[0]
+    return None
 
 def _wait_for_gate():
     """Blockiert solange Quota erschoepft ist oder Gemini nach einem Fehler pausiert."""
@@ -995,79 +1316,234 @@ def _wait_for_gate():
         log.info(f"Historisch: warte auf Gemini-Freigabe ({int(remaining)}s verbleibend) …")
         time.sleep(min(remaining + 2, 120))
 
-def _send_history_batch(alerts: list):
+def _send_history_batch(seg_id: int, alerts: list, offset: int):
+    """Store the batch, then move the segment's offset past it, then ask Gemini.
+    A crash between the first two steps analyses that one batch twice (the stored
+    batch is re-queued and its alerts are read again); it never loses alerts."""
+    _wait_for_gate()
     batch_id, groups = _store_batch(alerts, "history")
+    try:
+        watermark.advance_segment(seg_id, offset)
+    except OSError as exc:
+        # A full disk is not a read error of the segment. The next successful
+        # save carries the newer offset; only a crash before that re-reads.
+        log.error(f"Watermark konnte nicht gespeichert werden: {exc}")
     _do_gemini_and_save(batch_id, groups, source="history")
 
+def _process_segment(seg: dict) -> str:
+    """Analyse one backlog segment. Returns 'done' or 'retry' (file unreadable now)."""
+    path = _locate_segment_file(seg)
+    if path is None:
+        log.warning(f"Historisch: {seg['path']} nicht mehr auffindbar – uebersprungen")
+        return "done"
+
+    offset, end = seg["offset"], seg["end"]
+    log.info(f"Historisch: {path} (ab Byte {offset}{'' if end is None else f', bis {end}'})")
+    local_buf, count = [], 0
+    try:
+        with _open_alert_file(path) as f:
+            f.seek(offset)
+            while end is None or offset < end:
+                line = f.readline()
+                if not line:
+                    break
+                offset += len(line)
+                alert = _parse_alert(line)
+                if alert is None:
+                    continue
+                local_buf.append(alert)
+                count += 1
+                _inc("history_alerts")
+                if len(local_buf) >= HISTORY_BATCH:
+                    _send_history_batch(seg["id"], local_buf, offset)
+                    local_buf = []
+                    time.sleep(HISTORY_PAUSE)
+            if local_buf:
+                _send_history_batch(seg["id"], local_buf, offset)
+    except (OSError, EOFError, zlib.error) as exc:
+        log.error(f"Historisch: Fehler beim Lesen von {path}: {exc}")
+        return "retry"
+    log.info(f"Historisch: {path} fertig ({count} Alerts ab Byte {seg['offset']})")
+    return "done"
+
+SEGMENT_MAX_READ_FAILURES = 5
+_segment_failures: dict = {}
+
+def run_backlog_once() -> bool:
+    """Work on the oldest backlog segment. Returns False if there is none."""
+    seg = watermark.first_segment()
+    if seg is None:
+        if plan_ready.is_set():
+            _set("history_done", True)
+        return False
+    _set("history_done", False)
+    outcome = _process_segment(seg)
+    if outcome == "retry":
+        n = _segment_failures[seg["id"]] = _segment_failures.get(seg["id"], 0) + 1
+        if n < SEGMENT_MAX_READ_FAILURES:
+            time.sleep(60)
+            return True
+        log.error(f"Historisch: {seg['path']} nach {n} Lesefehlern aufgegeben")
+    _segment_failures.pop(seg["id"], None)
+    watermark.finish_segment(seg["id"])
+    _inc("history_files_done")
+    if watermark.first_segment() is None:
+        _set("history_done", True)
+        with stats_lock:
+            done = _stats["history_alerts"]
+        log.info(f"Historische Analyse abgeschlossen: {done} Alerts verarbeitet")
+    return True
+
+def history_worker():
+    """Runs forever: catches up on whatever the watermark says is still unread."""
+    while True:
+        try:
+            if not run_backlog_once():
+                time.sleep(5)
+        except Exception:
+            log.exception("Historisch: unerwarteter Fehler")
+            time.sleep(30)
+
 # ─── Live-Watcher ─────────────────────────────────────────────────────────────
-def _get_inode(path: str) -> int:
-    """Return inode number of a file, or -1 if it does not exist."""
-    try:
-        return os.stat(path).st_ino
-    except OSError:
-        return -1
+def _open_live_log(stop: threading.Event):
+    """Open alerts.json, waiting for it to exist (it is briefly absent during rotation)."""
+    warned = False
+    while not stop.is_set():
+        try:
+            return open(ALERTS_LOG, "rb")
+        except OSError:
+            if not warned:
+                log.warning(f"Alert-Log nicht gefunden: {ALERTS_LOG} – warte …")
+                warned = True
+            stop.wait(1.0)
+    return None
 
-def tail_alerts():
+def tail_alerts(stop: threading.Event = None):
     """
-    Follows alerts.json continuously.
-    Detects log rotation (inode change or file shrink) and reopens automatically.
+    Follows alerts.json continuously, starting where the watermark says.
+
+    Rotation (inode change) is handled by reading the old file to its end
+    through the still-open handle and then continuing with the new file from
+    byte 0 - no alert is skipped and none is read twice. A path that merely
+    changed its inode (re-linked, restored as a copy) but still holds the file
+    we were reading is not a rotation. A file that shrank in place is re-read
+    from the start.
     """
-    global last_flush_ts
+    stop = stop or threading.Event()
 
-    # Wait until the log file exists
-    while not os.path.exists(ALERTS_LOG):
-        log.warning(f"Alert-Log nicht gefunden: {ALERTS_LOG} – warte 15s …")
-        time.sleep(15)
-
+    f = _open_live_log(stop)
+    if f is None:
+        return
     log.info(f"Live-Ueberwachung: {ALERTS_LOG}")
-
-    def _open_at_end(path: str):
-        f = open(path, "r", errors="replace")
-        f.seek(0, 2)
-        return f, _get_inode(path)
-
-    f, current_inode = _open_at_end(ALERTS_LOG)
+    # Whatever is buffered belongs to a previous run of this function; the
+    # cursor was not advanced past it, so the planner reads it again.
+    with buffer_lock:
+        alert_buffer.clear()
     try:
-        while True:
+        try:
+            cursor = plan_resume(f)
+        except Exception:
+            # Never lose the live watcher over a planning problem: fall back to
+            # "start at the end" (the old behaviour) and say so. Nothing is
+            # saved in that case, the next start plans again.
+            log.exception("Wiederaufnahme-Planung fehlgeschlagen – starte am Dateiende")
+            st = os.fstat(f.fileno())
+            cursor = {"path": ALERTS_LOG, "dev": st.st_dev, "ino": st.st_ino,
+                      "offset": _last_line_boundary(f, 0, st.st_size),
+                      "head": _first_line_digest(f, closed=False)}
+        finally:
+            plan_ready.set()
+
+        dev, ino = cursor["dev"], cursor["ino"]
+        pos, head = cursor["offset"], cursor["head"]
+        live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+        live_cursor.committed = dict(live_cursor.value)
+        f.seek(pos)
+
+        while not stop.is_set():
             line = f.readline()
+            if line.endswith(b"\n"):
+                if pos == 0 and head is None:
+                    head = _line_digest(line)
+                pos += len(line)
+                live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+                _handle_line(line.decode("utf-8", errors="replace").strip(), source="live")
+                continue
             if line:
-                _handle_line(line.strip(), source="live")
-                continue
+                f.seek(pos)          # half-written line: wait for its end
 
-            # No new data – check for rotation before sleeping
-            # Rotation detected when:
-            #   a) The inode of ALERTS_LOG changed (rename+create)
-            #   b) The file is smaller than our current position (truncate)
+            # No complete new line - check for rotation before sleeping.
             try:
-                disk_inode = _get_inode(ALERTS_LOG)
-                disk_size  = os.path.getsize(ALERTS_LOG)
+                disk = os.stat(ALERTS_LOG)
+                disk_ident, disk_size = (disk.st_dev, disk.st_ino), disk.st_size
             except OSError:
-                disk_inode = -1
-                disk_size  = 0
+                disk_ident, disk_size = None, 0
 
-            pos = f.tell()
-            if disk_inode != current_inode or disk_size < pos:
-                log.info(
-                    f"Log-Rotation erkannt (inode {current_inode}→{disk_inode}, "
-                    f"pos {pos}→size {disk_size}) – Datei wird neu geoeffnet"
-                )
+            if disk_ident != (dev, ino):
+                # The path no longer points at our inode - or is missing for a
+                # moment. Look at what is there before deciding it is a rotation.
+                new_f = _open_live_log(stop)
+                if new_f is None:
+                    return
+                st = os.fstat(new_f.fileno())
+                same_file = ((st.st_dev, st.st_ino) == (dev, ino)
+                             or (head is not None and st.st_size >= pos
+                                 and _first_line_digest(new_f, closed=False) == head))
+                if same_file:
+                    log.info("alerts.json hat den Inode gewechselt, enthaelt aber dieselbe Datei – "
+                             "keine Rotation, lese an der gemerkten Stelle weiter")
+                    f.close()
+                    f, dev, ino = new_f, st.st_dev, st.st_ino
+                    f.seek(pos)
+                    live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+                    continue
+                log.info(f"Log-Rotation erkannt (inode {ino}→{st.st_ino}) – "
+                         f"lese die alte Datei ab Byte {pos} zu Ende")
+                while True:          # the writer is gone: take everything, even an unterminated last line
+                    rest = f.readline()
+                    if not rest:
+                        break
+                    pos += len(rest)
+                    live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+                    _handle_line(rest.decode("utf-8", errors="replace").strip(), source="live")
                 f.close()
-                # Brief pause so the new file has time to appear
-                time.sleep(1.0)
-                while not os.path.exists(ALERTS_LOG):
-                    time.sleep(1.0)
-                f, current_inode = _open_at_end(ALERTS_LOG)
-                log.info(f"Live-Watcher neu geoeffnet (inode {current_inode})")
+                f = new_f
+                f.seek(0)
+                dev, ino, pos, head = st.st_dev, st.st_ino, 0, None
+                live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+                log.info(f"Live-Watcher neu geoeffnet (inode {ino}), lese ab Byte 0")
                 continue
 
-            # Truly no data – sleep and maybe flush buffer
-            time.sleep(0.3)
+            if disk_size < pos:
+                log.warning(f"{ALERTS_LOG} wurde gekuerzt ({pos}→{disk_size} Bytes) – lese von vorn")
+                f.seek(0)
+                pos, head = 0, None
+                live_cursor.set(ALERTS_LOG, dev, ino, pos, head)
+                continue
+
+            # Truly no data - sleep, maybe flush the buffer, maybe persist the position
+            stop.wait(0.3)
             with buffer_lock:
-                if alert_buffer and (time.time() - last_flush_ts) >= BATCH_TIMEOUT:
-                    log.info(f"Timeout-Flush: {len(alert_buffer)} Alerts")
-                    _flush(source="live")
+                if alert_buffer:
+                    if (time.time() - last_flush_ts) >= BATCH_TIMEOUT:
+                        log.info(f"Timeout-Flush: {len(alert_buffer)} Alerts")
+                        _flush(source="live")
+                elif live_cursor.dirty() and time.time() - live_cursor.last_commit >= WATERMARK_IDLE_COMMIT:
+                    live_cursor.commit()
     finally:
         f.close()
+
+def live_watcher(stop: threading.Event = None):
+    """tail_alerts under supervision: an unexpected error must not leave the
+    service running without anyone watching the log."""
+    stop = stop or threading.Event()
+    while not stop.is_set():
+        try:
+            tail_alerts(stop)
+            return
+        except Exception:
+            log.exception("Live-Watcher abgestuerzt – Neustart in 10s")
+            stop.wait(10)
 
 # ─── Alert-Gruppierung ────────────────────────────────────────────────────────
 def group_alerts(alerts: list) -> list:
@@ -1237,11 +1713,6 @@ def call_gemini(groups: list) -> tuple:
         return None, GeminiFailure("bad_response", f"Gemini: Fehler: {e}")
 
 # ─── Batch-Analyse ────────────────────────────────────────────────────────────
-def analyze_batch(alerts: list, source: str = "live"):
-    log.info(f"[{source}] Analysiere {len(alerts)} Alerts …")
-    batch_id, groups = _store_batch(alerts, source)
-    _do_gemini_and_save(batch_id, groups, source=source)
-
 def _do_gemini_and_save(batch_id: int, groups: list, source: str = "live", is_retry: bool = False):
     """Run one Gemini attempt for an already stored batch. Whatever happens, the
     batch ends up 'done', 'pending' (queued for retry) or 'error' (counted)."""
@@ -1482,8 +1953,10 @@ if __name__ == "__main__":
     # re-queue it instead of leaving it on 'analyzing' forever.
     _requeue_stale(0)
 
-    threading.Thread(target=historical_scan, daemon=True, name="history").start()
-    threading.Thread(target=tail_alerts,     daemon=True, name="live").start()
+    watermark.load()
+    _set("history_files_total", len(watermark.backlog))
+    threading.Thread(target=history_worker,  daemon=True, name="history").start()
+    threading.Thread(target=live_watcher,    daemon=True, name="live").start()
     threading.Thread(target=retry_worker,    daemon=True, name="retry").start()
 
     log.info(f"Dashboard:     http://{LISTEN_HOST}:{PORT}/login")
