@@ -1198,6 +1198,11 @@ plan_ready = threading.Event()
 def _segment(path: str, offset: int, end, head) -> dict:
     return {"path": path, "offset": offset, "end": end, "head": head}
 
+def _archives_since(ts: float, exclude) -> list:
+    """Dated archives of the local day of `ts` or later."""
+    since = _date_of(ts)
+    return [a for a in list_dated_archives(exclude=exclude) if a[0] >= since]
+
 def plan_resume(f) -> dict:
     """Reconcile the saved watermark with what is on disk, once at startup.
 
@@ -1224,10 +1229,11 @@ def plan_resume(f) -> dict:
         if boundary > 0:
             segments.append(_segment(ALERTS_LOG, 0, boundary, head_now))
     elif (head_now == live["head"] if live["head"] is not None
-          else (live["dev"], live["ino"]) == ident):
+          else (live["dev"], live["ino"]) == ident and not _archives_since(live["ts"], ident)):
         # Same file as before: continue where we stopped. (A cursor without a
-        # first-line hash means the file was still empty; only the inode can
-        # say whether this is that file or already a later one.)
+        # first-line hash means the file was still empty. The inode alone cannot
+        # tell that file from a later one - freed inodes are reused at once - so
+        # it only counts if no archive of that day or later has appeared.)
         start = live["offset"] if live["head"] is not None else 0
         if st.st_size < start:
             log.warning(f"{ALERTS_LOG} ist kleiner als die gemerkte Position ({st.st_size} < {start}) – "
