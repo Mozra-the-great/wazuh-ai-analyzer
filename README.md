@@ -363,6 +363,8 @@ Das Dashboard zeigt priorisierte Sicherheitsschwachstellen deiner Infrastruktur,
 | Session-Key | Zufällig generiert, persistent, chmod 600 |
 | Session-Cookie | `Secure` (nur HTTPS) und `SameSite=Lax` gesetzt |
 | LLM-Whitelist | `overall_risk` und `severity` werden gegen Enum geprüft – Prompt Injection landet nicht in der DB |
+| Prompt-Isolation | Alert-Felder (`full_log`, Agent, Benutzer, IP …) sind angreiferbeeinflussbar: Steuer-/Formatzeichen und Zeilenumbrüche werden entfernt, alles ist längenbegrenzt und geht nur als JSON-Zeile in einen Datenblock mit zufälligen Markierungen pro Anfrage; System- und Prompt-Text erklären den Block zu unvertrauenswürdigen Daten |
+| Antwort-Schema | Die Modellantwort wird strikt geprüft (`validate_result`): nur `summary`/`overall_risk`/`findings`, Enums per Whitelist, Texte bereinigt und begrenzt, `affected_agents`/`rule_ids` nur aus dem Batch, max. 50 Findings. Falsche Form → wie unlesbare Antwort (begrenzte Wiederholung). Stuft das Modell eine Regel mit Level ≥ 12 als `info`/`low` ein, wird das nur geloggt und in `runtime.suspicious_downgrades` gezählt |
 | noindex Meta-Tag | Suchmaschinen indexieren das Dashboard nicht |
 | Generischer Titel | `Security Dashboard` statt produktspezifischer Name (erschwert Shodan-Fingerprinting) |
 | WAL-Modus | SQLite Write-Ahead Logging – keine "database is locked" Fehler unter Last |
