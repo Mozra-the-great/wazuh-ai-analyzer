@@ -54,7 +54,7 @@ Bei Fehlern (429, 5xx, Timeout, Verbindungsfehler):
 
 | Fehler | Verhalten |
 |---|---|
-| 429 (Quota/Rate-Limit) | Batch wartet bis zum Quota-Reset, läuft nie ab |
+| 429 (Quota/Rate-Limit) | Batch wartet bis zum Quota-Reset (höchstens `QUEUE_MAX_AGE_HOURS` insgesamt) |
 | HTTP 5xx / 408, Timeout, Verbindungsfehler | Backoff 1 min → 1 h (mit Jitter); nach `RETRY_MAX_AGE_HOURS` ohne Erfolg → `error` |
 | HTTP 401 / 403 / 404, 400 mit `API_KEY_INVALID` / `FAILED_PRECONDITION` (Key, Region oder Modell falsch) | wie oben, die Batches bleiben für den Betreiber erhalten, bis der Key korrigiert ist |
 | Unlesbare Gemini-Antwort | max. `RETRY_BAD_RESPONSE_MAX` Versuche, dann `error` |
@@ -132,6 +132,7 @@ systemctl restart wazuh-ai-analyzer
 | `RETRY_BASE_DELAY` | `60` | Start-Backoff in Sekunden nach einem Fehler (verdoppelt sich pro Versuch) |
 | `RETRY_MAX_DELAY` | `3600` | Obergrenze des Backoffs in Sekunden |
 | `RETRY_MAX_AGE_HOURS` | `72` | Nach dieser Zeit ununterbrochener 5xx-/Netzfehler wird ein Batch `error` (Quota-Wartezeit zählt nicht) |
+| `QUEUE_MAX_AGE_HOURS` | `72` | Höchstalter eines wartenden Batches (inkl. Quota-Wartezeit); ältere werden `error` (`runtime.expired`). Die Queue wird neueste zuerst abgearbeitet, damit frische Alerts bei knapper Quota nicht hinter altem Rückstand warten |
 | `RETRY_BAD_RESPONSE_MAX` | `3` | Versuche bei unlesbarer Gemini-Antwort |
 | `RETRY_POLL` / `RETRY_PACE` | `30` / `10` | Retry-Worker: Prüfintervall im Leerlauf / Pause zwischen zwei Wiederholungen (Sekunden) |
 | `STALE_ANALYZING_SECONDS` | `900` | Batches, die so lange unbearbeitet auf `analyzing` stehen, werden wieder eingereiht |

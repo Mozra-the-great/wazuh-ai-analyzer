@@ -496,3 +496,42 @@ def test_unexpected_answer_shape_is_stored_not_retried(az, gemini):
     with az._db() as conn:
         f = conn.execute("SELECT * FROM findings WHERE batch_id=?", (batch_id,)).fetchone()
     assert f["severity"] == "info" and json.loads(f["affected_agents"]) == []
+
+
+# ── bounded queue: arrival rate above the daily quota ────────────────────────
+
+def test_newest_live_batch_is_retried_first(az, gemini):
+    gemini(gemini_ok())
+    ids = [new_batch(az) for _ in range(3)]
+    with az._db() as conn:
+        conn.execute("UPDATE batches SET status='pending', next_attempt=0")
+    az._retry_once()
+    assert [row(az, b)["status"] for b in ids] == ["pending", "pending", "done"]
+
+
+def test_batches_waiting_longer_than_the_queue_limit_expire(az, gemini, caplog):
+    fake = gemini(gemini_ok())
+    old, fresh = new_batch(az), new_batch(az)
+    ancient = az._iso(az._now() - (az.QUEUE_MAX_AGE_HOURS + 1) * 3600)
+    with az._db() as conn:
+        conn.execute("UPDATE batches SET created_at=? WHERE id=?", (ancient, old))
+        conn.execute("UPDATE batches SET status='pending', next_attempt=0")
+    az.quota.mark_exhausted("quota", 3600)                  # expiry must work while gated, too
+    with caplog.at_level("WARNING"):
+        assert az._retry_once() is False
+    assert row(az, old)["status"] == "error" and "expired" in row(az, old)["last_error"]
+    assert row(az, fresh)["status"] == "pending"
+    assert az._stats["expired"] == 1 and az._stats["errors"] == 1 and fake.calls == 0
+    assert any("verworfen" in r.getMessage() for r in caplog.records)
+
+
+def test_months_old_analyzing_leftovers_are_requeued_and_then_expired(az, gemini):
+    """Production had 700 of them, the oldest from March."""
+    fake = gemini(gemini_ok())
+    stuck = new_batch(az)
+    with az._db() as conn:
+        conn.execute("UPDATE batches SET created_at='2026-03-19T21:33:44+00:00', claimed_at=NULL WHERE id=?",
+                     (stuck,))
+    assert az._requeue_stale(0) == 1
+    az._retry_once()
+    assert row(az, stuck)["status"] == "error" and fake.calls == 0
