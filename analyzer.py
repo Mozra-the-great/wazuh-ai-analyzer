@@ -69,6 +69,14 @@ RETRY_MAX_AGE_HOURS    = float(os.environ.get("RETRY_MAX_AGE_HOURS", "72"))
 # without a limit the queue (and the delay of every new alert) would only grow.
 # The queue is drained newest first, so what expires is the oldest backlog.
 QUEUE_MAX_AGE_HOURS    = float(os.environ.get("QUEUE_MAX_AGE_HOURS", "72"))
+# Retention (#283): done/error batches and their findings older than this many days
+# are deleted from analyses.db. 0 = keep everything (default). Pending/analyzing
+# batches are never touched - they are bounded by QUEUE_MAX_AGE_HOURS instead.
+RETENTION_DAYS         = float(os.environ.get("RETENTION_DAYS", "0"))
+# How often the retry worker runs the cleanup, and how many batches one
+# transaction deletes (keeps the write lock short next to the live writers).
+RETENTION_INTERVAL     = float(os.environ.get("RETENTION_INTERVAL", "3600"))
+RETENTION_CHUNK        = max(1, int(os.environ.get("RETENTION_CHUNK", "500")))
 # Unparseable / empty Gemini answers are not an outage - give up after this many.
 RETRY_BAD_RESPONSE_MAX = int(os.environ.get("RETRY_BAD_RESPONSE_MAX", "3"))
 # Retry worker: poll interval when idle, pause between two retried batches
@@ -740,11 +748,59 @@ def _retry_once() -> bool:
     _do_gemini_and_save(row["id"], groups, source=row["source"], is_retry=True)
     return True
 
+def purge_old_batches(retention_days: float = None) -> int:
+    """Delete done/error batches (and their findings) older than RETENTION_DAYS.
+    pending/analyzing rows are never deleted. Works in small transactions so the
+    live writers are not blocked; freed pages are reused by SQLite, so the file
+    stops growing without a (locking, space-doubling) VACUUM. Returns the
+    number of deleted batches."""
+    days = RETENTION_DAYS if retention_days is None else retention_days
+    if days <= 0:
+        return 0
+    cutoff = _iso(_now() - days * 86400)
+    deleted = 0
+    while True:
+        with _db() as conn:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM batches WHERE status IN ('done', 'error') "
+                "AND created_at < ? ORDER BY id LIMIT ?", (cutoff, RETENTION_CHUNK))]
+            if not ids:
+                break
+            marks = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM findings WHERE batch_id IN ({marks})", ids)
+            conn.execute(f"DELETE FROM batches WHERE id IN ({marks})", ids)
+        deleted += len(ids)
+        if len(ids) < RETENTION_CHUNK:
+            break
+    if deleted:
+        _inc("purged_batches", deleted)
+        try:
+            with _db() as conn:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error:
+            pass
+        log.info(f"Retention: {deleted} Batches (done/error) aelter als {days:g} Tage "
+                 f"samt Findings geloescht (purged_batches={_stats['purged_batches']})")
+    return deleted
+
+_last_purge = 0.0
+
+def _purge_if_due():
+    global _last_purge
+    if RETENTION_DAYS <= 0:
+        return
+    now = time.monotonic()
+    if _last_purge and now - _last_purge < RETENTION_INTERVAL:
+        return
+    _last_purge = now
+    purge_old_batches()
+
 def retry_worker():
     """Runs forever: retries due batches from the database (survives restarts)."""
     while True:
         did_work = False
         try:
+            _purge_if_due()
             did_work = _retry_once()
         except Exception:
             log.exception("Retry-Worker: unerwarteter Fehler")
@@ -1126,6 +1182,8 @@ _stats     = {
     "dropped_permanent": 0, "dropped_bad_response": 0, "expired": 0,
     # Model rated a rule of level >= 12 as info/low (#38): flagged, never changed.
     "suspicious_downgrades": 0,
+    # Batches deleted by the retention cleanup (RETENTION_DAYS).
+    "purged_batches": 0,
 }
 
 def _inc(key, n=1):
@@ -2031,6 +2089,7 @@ def api_stats():
         "batch_timeout_quiet": max(BATCH_TIMEOUT_QUIET, BATCH_TIMEOUT),
         "urgent_level":     URGENT_LEVEL,
         "runtime":          s,
+        "retention_days":   RETENTION_DAYS,
         "gemini_ok":        bool(GEMINI_API_KEY),
         "quota":            quota.as_dict(),
         # Persistent queue: batches waiting for their next attempt.
@@ -2172,6 +2231,11 @@ if __name__ == "__main__":
     log.info(f"Batch:         {BATCH_MAX} Alerts / {BATCH_TIMEOUT}s Timeout ({max(BATCH_TIMEOUT_QUIET, BATCH_TIMEOUT)}s unter Level {URGENT_LEVEL}) | Min-Level: {MIN_LEVEL}")
     log.info(f"History:       {HISTORY_BATCH} Alerts/Batch | {HISTORY_PAUSE}s Pause")
     log.info(f"Infra-Kontext: {INFRA_CONTEXT}")
+    if RETENTION_DAYS > 0:
+        log.info(f"Retention:     done/error-Batches + Findings aelter als {RETENTION_DAYS:g} Tage "
+                 f"werden geloescht (Pruefung alle {RETENTION_INTERVAL:g}s)")
+    else:
+        log.info("Retention:     deaktiviert (RETENTION_DAYS=0) - analyses.db waechst unbegrenzt")
 
     if LISTEN_HOST != "127.0.0.1" and not DASHBOARD_PASSWORD_HASH:
         log.warning("SICHERHEIT: Dashboard auf " + LISTEN_HOST + " OHNE Passwort – Zugriff nicht möglich!")
