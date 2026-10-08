@@ -135,6 +135,7 @@ systemctl restart wazuh-ai-analyzer
 | `RETRY_MAX_DELAY` | `3600` | Obergrenze des Backoffs in Sekunden |
 | `RETRY_MAX_AGE_HOURS` | `72` | Nach dieser Zeit ununterbrochener 5xx-/Netzfehler wird ein Batch `error` (Quota-Wartezeit zählt nicht) |
 | `QUEUE_MAX_AGE_HOURS` | `72` | Höchstalter eines wartenden Batches (inkl. Quota-Wartezeit); ältere werden `error` (`runtime.expired`). Die Queue wird neueste zuerst abgearbeitet, damit frische Alerts bei knapper Quota nicht hinter altem Rückstand warten |
+| `RETENTION_DAYS` | `0` | Retention für `analyses.db`: `done`-/`error`-Batches und ihre Findings, die älter als so viele Tage sind, werden gelöscht (`0` = nichts löschen). `pending`/`analyzing` bleiben unberührt. Prüfung beim Start und danach alle `RETENTION_INTERVAL` Sekunden (Standard `3600`), je Transaktion höchstens `RETENTION_CHUNK` (`500`) Batches; kein VACUUM, freigewordene Seiten werden wiederverwendet. Zähler: `runtime.purged_batches` |
 | `RETRY_BAD_RESPONSE_MAX` | `3` | Versuche bei unlesbarer Gemini-Antwort |
 | `RETRY_POLL` / `RETRY_PACE` | `30` / `10` | Retry-Worker: Prüfintervall im Leerlauf / Pause zwischen zwei Wiederholungen (Sekunden) |
 | `STALE_ANALYZING_SECONDS` | `900` | Batches, die so lange unbearbeitet auf `analyzing` stehen, werden wieder eingereiht |
