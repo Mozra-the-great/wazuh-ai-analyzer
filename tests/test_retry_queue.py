@@ -469,7 +469,7 @@ def test_bad_response_budget_is_not_eaten_by_quota_waits(az, gemini):
 
 
 def test_live_batches_are_retried_before_old_history(az, gemini):
-    fake = gemini(gemini_ok())
+    gemini(gemini_ok())
     old = az._store_batch([ALERT], "history")[0]
     live = new_batch(az)
     for b in (old, live):

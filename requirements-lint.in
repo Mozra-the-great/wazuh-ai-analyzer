@@ -1,0 +1,8 @@
+# Lint tooling for CI (ruff). Kept apart from requirements.in on purpose: the
+# analyzer's runtime install (install.sh) must not pull in dev tools, and this
+# file is not part of checksums.sha256.
+#
+# Regenerate (also to bump the version) with Python 3.12:
+#   pip install pip-tools
+#   pip-compile --generate-hashes --strip-extras --output-file=requirements-lint.txt requirements-lint.in
+ruff==0.16.9

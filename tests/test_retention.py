@@ -36,8 +36,8 @@ def test_disabled_by_default_deletes_nothing(az):
 
 
 def test_purges_old_done_and_error_with_findings(az):
-    old_done = _batch(az, "done", 200, findings=3)
-    old_err = _batch(az, "error", 190, findings=0)
+    _batch(az, "done", 200, findings=3)
+    _batch(az, "error", 190, findings=0)
     fresh_done = _batch(az, "done", 10, findings=2)
     fresh_err = _batch(az, "error", 1)
     assert az.purge_old_batches(180) == 2
