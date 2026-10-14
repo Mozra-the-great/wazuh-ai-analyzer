@@ -1,5 +1,10 @@
 name: Tests
 
+# Job names are the required status checks of the repo ruleset: `pytest (3.10)`,
+# `pytest (3.12)` and `lint`. Keep them stable. No `paths:` filter on purpose
+# (convention C1): a required check whose workflow does not start stays pending
+# forever.
+
 on:
   pull_request:
   push:
@@ -8,9 +13,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -28,3 +38,66 @@ jobs:
           pip install pytest
       - name: Run tests
         run: python -m pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # ruff from a hash-pinned requirements file (see requirements-lint.in); the
+      # rule set lives in ruff.toml.
+      - name: Install ruff
+        run: pip install --require-hashes -r requirements-lint.txt
+      - name: ruff
+        run: ruff check .
+
+      # Same pinned ShellCheck release as the workflow-lint job, so a result is
+      # the same locally and in CI.
+      - name: Install ShellCheck
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          set -euo pipefail
+          s="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -sSfL -o "$s" "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${s}"
+          echo "${SHELLCHECK_SHA256}  ${s}" | sha256sum -c -
+          tar -xzf "$s" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          ./shellcheck --version
+      - name: ShellCheck
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.sh' | xargs -0 -r ./shellcheck
+          git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+
+      # install.sh verifies the downloaded files against checksums.sha256, so a
+      # catalogue that does not match the tracked files breaks every install from
+      # that ref. scripts/release.sh regenerates it for a release; after any other
+      # change to one of the three files (also a Dependabot bump of
+      # requirements.txt) regenerate it by hand with the command below.
+      # install.sh looks entries up by exact name, so the format matters too:
+      # "<sha256>  <path>" (two spaces). A "*<path>" entry (the binary-mode marker
+      # sha256sum writes on Windows unless --text is given) passes `sha256sum --check`
+      # but is never found by install.sh, hence the explicit format check.
+      - name: checksums.sha256 matches the tracked files
+        run: |
+          set -euo pipefail
+          fix='sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256'
+          [ -s checksums.sha256 ] || { echo "::error title=checksums.sha256::Empty or missing. Regenerate with: ${fix}"; exit 1; }
+          while IFS= read -r line; do
+            if ! grep -Eq '^[0-9a-f]{64}  [^* ]' <<<"$line"; then
+              echo "::error title=checksums.sha256::Malformed entry (expected '<sha256>  <path>', no '*'). Regenerate with: ${fix}"
+              exit 1
+            fi
+            git ls-files --error-unmatch -- ":(literal)${line:66}" >/dev/null
+          done < checksums.sha256
+          if ! sha256sum --check --strict checksums.sha256; then
+            echo "::error title=checksums.sha256::Out of date. Regenerate with: ${fix}"
+            exit 1
+          fi

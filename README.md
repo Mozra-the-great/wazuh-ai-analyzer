@@ -276,12 +276,16 @@ Regeln in einem größeren Batch zu einer Gruppe zusammenfallen. Der Preis ist L
 `requirements.txt` ist mit `pip-compile --generate-hashes` aus `requirements.in` erzeugt und
 enthält für jedes Paket (auch transitive) einen SHA256. Der Installer und die CI installieren mit
 `pip install --require-hashes -r requirements.txt`; ein manipuliertes PyPI-Release wird abgelehnt.
-Version anheben: Pin in `requirements.in` ändern, dann
+Version anheben (mit Python 3.12, den Datei-Header unverändert lassen – Dependabot liest Python-Version
+und Optionen daraus): Pin in `requirements.in` ändern, dann
 
 ```bash
 pip install pip-tools
 pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
 ```
+
+Danach `checksums.sha256` neu erzeugen (`sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256`),
+sonst schlägt der `lint`-Job fehl. Dependabot hält die Pins per Wochen-PR aktuell (siehe `.github/dependabot.yml`).
 
 ---
 

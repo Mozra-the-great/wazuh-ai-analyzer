@@ -564,7 +564,6 @@ def test_watermark_save_failure_does_not_abort_the_segment(az, seen, monkeypatch
 
 def test_supervisor_restarts_a_crashed_live_watcher(az, monkeypatch):
     runs = []
-    stop = threading.Event()
 
     def flaky_tail(ev_stop):
         runs.append(1)
