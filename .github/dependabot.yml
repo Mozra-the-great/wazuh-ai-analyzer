@@ -26,7 +26,7 @@ version: 2
 # Dependabot PR does not update it, so the `lint` job fails on such a PR ("checksums.sha256
 # matches the tracked files"). Fix it on the PR branch before merging:
 #   git fetch origin <branch> && git checkout <branch>
-#   sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256
+#   sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256
 #   git commit -am "chore(deps): refresh checksums.sha256" && git push
 # If a pip-compile run ever fails in Dependabot (e.g. a resolution conflict), bump the
 # pin by hand with the command in requirements.in.
@@ -48,3 +48,9 @@ updates:
       default-days: 7
     commit-message:
       prefix: "chore(deps)"
+    # One PR per week for all pip bumps: each of them needs the same manual
+    # checksums.sha256 refresh (see above), so one PR means one refresh.
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"

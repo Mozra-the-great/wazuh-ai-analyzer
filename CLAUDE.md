@@ -45,7 +45,7 @@ reads the Python version and the options from it).
 
 ## Rules that are easy to break
 - **checksums.sha256** must match the three files it lists, in the same commit as any
-  change to them: `sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256`
+  change to them: `sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256`
   (use LF checkouts, see `.gitattributes`; the `lint` job fails otherwise).
 - Required check names (ruleset): `pytest (3.10)`, `pytest (3.12)`, `lint`. Do not
   rename the jobs and do not add a `paths:` filter to workflows that provide them.

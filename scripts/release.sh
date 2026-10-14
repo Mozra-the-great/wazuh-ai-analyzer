@@ -37,7 +37,7 @@ for f in analyzer.py static/index.html requirements.txt; do
 done
 
 echo "→ Regeneriere checksums.sha256 …"
-sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256
+sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256
 echo "  $(cat checksums.sha256 | tr '\n' ' ')"
 
 echo "→ Setze WAZUH_AI_REF-Default in install.sh auf ${VERSION} …"

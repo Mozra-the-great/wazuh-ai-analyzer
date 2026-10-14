@@ -284,7 +284,7 @@ pip install pip-tools
 pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
 ```
 
-Danach `checksums.sha256` neu erzeugen (`sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256`),
+Danach `checksums.sha256` neu erzeugen (`sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256`),
 sonst schlägt der `lint`-Job fehl. Dependabot hält die Pins per Wochen-PR aktuell (siehe `.github/dependabot.yml`).
 
 ---

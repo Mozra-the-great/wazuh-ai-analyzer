@@ -81,14 +81,23 @@ jobs:
       # that ref. scripts/release.sh regenerates it for a release; after any other
       # change to one of the three files (also a Dependabot bump of
       # requirements.txt) regenerate it by hand with the command below.
+      # install.sh looks entries up by exact name, so the format matters too:
+      # "<sha256>  <path>" (two spaces). A "*<path>" entry (the binary-mode marker
+      # sha256sum writes on Windows unless --text is given) passes `sha256sum --check`
+      # but is never found by install.sh, hence the explicit format check.
       - name: checksums.sha256 matches the tracked files
         run: |
           set -euo pipefail
-          while read -r _ file; do
-            git ls-files --error-unmatch -- "$file" >/dev/null
+          fix='sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256'
+          [ -s checksums.sha256 ] || { echo "::error title=checksums.sha256::Empty or missing. Regenerate with: ${fix}"; exit 1; }
+          while IFS= read -r line; do
+            if ! grep -Eq '^[0-9a-f]{64}  [^* ]' <<<"$line"; then
+              echo "::error title=checksums.sha256::Malformed entry (expected '<sha256>  <path>', no '*'). Regenerate with: ${fix}"
+              exit 1
+            fi
+            git ls-files --error-unmatch -- ":(literal)${line:66}" >/dev/null
           done < checksums.sha256
           if ! sha256sum --check --strict checksums.sha256; then
-            echo "::error title=checksums.sha256::Out of date. Regenerate with:" \
-              "sha256sum analyzer.py static/index.html requirements.txt > checksums.sha256"
+            echo "::error title=checksums.sha256::Out of date. Regenerate with: ${fix}"
             exit 1
           fi
