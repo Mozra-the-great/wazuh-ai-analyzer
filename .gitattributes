@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# These files are verified against checksums.sha256 (install.sh, CI lint job).
+# A CRLF checkout (core.autocrlf on Windows) would change their sha256, so pin LF.
+analyzer.py text eol=lf
+static/index.html text eol=lf
+requirements.txt text eol=lf
+checksums.sha256 text eol=lf
+*.sh text eol=lf
