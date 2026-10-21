@@ -47,8 +47,10 @@ reads the Python version and the options from it).
 - **checksums.sha256** must match the three files it lists, in the same commit as any
   change to them: `sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256`
   (use LF checkouts, see `.gitattributes`; the `lint` job fails otherwise).
-- Required check names (ruleset): `pytest (3.10)`, `pytest (3.12)`, `lint`. Do not
-  rename the jobs and do not add a `paths:` filter to workflows that provide them.
+- Required check names (ruleset "Schütz mein Baum", active since 2026-10-21): `pytest (3.10)`,
+  `pytest (3.12)`, `lint`, `CodeQL` (GitHub default setup), `workflow-lint`, `gitleaks`.
+  Do not rename the jobs and do not add a `paths:` filter to workflows that provide them.
+  `claude-review` is not required yet; add it once `CLAUDE_CODE_OAUTH_TOKEN` is set.
 - The Gemini API key lives in the service environment only. Never print the
   environment, never commit `.env*`, never put real keys in tests (`conftest.py` uses a
   dummy).
