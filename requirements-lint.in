@@ -5,4 +5,4 @@
 # Regenerate (also to bump the version) with Python 3.12:
 #   pip install pip-tools
 #   pip-compile --generate-hashes --strip-extras --output-file=requirements-lint.txt requirements-lint.in
-ruff==0.17.1
+ruff==0.17.2
