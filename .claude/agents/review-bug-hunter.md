@@ -30,3 +30,9 @@ not sure an issue is real, leave it out.
 Return a list. For each issue: file, line in the new version, a one-line
 summary, the concrete failing input and outcome, and the fix in one sentence.
 If there is none, return exactly `NONE`.
+
+Working environment: the current directory is a checkout of this pull request
+(its merge commit), so the files there already contain the change - read them
+with Read, Grep and Glob. The only shell commands you need are `gh pr diff` and
+`gh pr view`. Run each on its own: no `cd`, pipes or chained commands, no
+`git fetch`, no `gh api`. Anything else is denied and only costs time.
