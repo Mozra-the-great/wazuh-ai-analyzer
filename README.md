@@ -1,5 +1,7 @@
 # 🛡️ Wazuh AI Analyzer
 
+<!-- review test A -->
+
 **powered by Aeterna™** · Erstellt mithilfe von KI (Claude by Anthropic)
 
 > ⚠️ **Sicherheitshinweis:** Das Dashboard zeigt eine priorisierte Liste deiner Sicherheitsschwachstellen inklusive betroffener Systeme. Exponiere es **niemals direkt ins Internet** ohne Authentifizierung.
