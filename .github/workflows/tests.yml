@@ -4,6 +4,11 @@ name: Tests
 # `pytest (3.12)` and `lint`. Keep them stable. No `paths:` filter on purpose
 # (convention C1): a required check whose workflow does not start stays pending
 # forever.
+#
+# The rewrite (`wazuh_ai_analyzer/`) needs Python >= 3.11, so `pytest` runs 3.11 and
+# 3.12. The ruleset still requires `pytest (3.10)`; until the maintainer replaces that
+# required check by `pytest (3.11)`, the job `pytest-legacy` below keeps the name alive
+# and runs the legacy analyzer tests on 3.10. After the ruleset change, delete the job.
 
 on:
   pull_request:
@@ -24,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,9 +40,45 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --require-hashes -r requirements.txt
-          pip install pytest
+          pip install --require-hashes -r requirements-test.txt
       - name: Run tests
         run: python -m pytest -q
+
+  # Temporary: keeps the required check `pytest (3.10)` satisfiable (see the header).
+  # Runs only the legacy analyzer tests; the rewrite does not support 3.10.
+  pytest-legacy:
+    name: pytest (3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install --require-hashes -r requirements-test.txt
+      - name: Run legacy tests
+        run: python -m pytest -q --ignore=tests/v2
+
+  mypy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install type checker
+        run: pip install --require-hashes -r requirements-lint.txt
+      # `strict = true` and the file list are in pyproject.toml.
+      - name: mypy --strict
+        run: mypy
 
   lint:
     runs-on: ubuntu-latest

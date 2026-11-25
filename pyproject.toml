@@ -1,0 +1,28 @@
+# Project metadata and tool configuration for the rewrite (`wazuh_ai_analyzer/`).
+#
+# There is no build backend on purpose: the package is not installed as a wheel.
+# A release is a tarball of the source tree that runs as `python -m wazuh_ai_analyzer`
+# inside a venv that only holds the hash-pinned dependencies (requirements.txt).
+# The legacy single-file service (analyzer.py) is configured by ruff.toml and
+# requirements.txt as before until the cutover.
+
+[project]
+name = "wazuh-ai-analyzer"
+version = "2.0.0.dev0"
+description = "Analyses Wazuh alerts with Gemini and serves the findings in a dashboard"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["wazuh_ai_analyzer", "tests/v2"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# The legacy module is untyped and large; tests only reach it through a fixture.
+module = "analyzer"
+follow_imports = "skip"

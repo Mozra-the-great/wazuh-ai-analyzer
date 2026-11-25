@@ -1,0 +1,4 @@
+# A fake dummy key of an earlier commit of this branch (tests/v2/unit/test_config.py). It is
+# replaced in the next commit; the range scan of the pull request still sees the first one.
+# Fingerprint: <commit>:<file>:<rule>:<line>. Keep this file to single fingerprints.
+aae10fb7d84d5086f29fe670cb533245fe42530b:tests/v2/unit/test_config.py:generic-api-key:274

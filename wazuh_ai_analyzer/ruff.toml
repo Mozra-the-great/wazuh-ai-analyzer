@@ -1,0 +1,11 @@
+# Stricter rule set for the rewrite. The repo-wide ruff.toml keeps linting the
+# legacy analyzer.py with its small, pinned rule set.
+extend = "../ruff.toml"
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "C4", "RUF", "PT", "PTH"]
+
+[lint.isort]
+known-first-party = ["wazuh_ai_analyzer", "v2"]

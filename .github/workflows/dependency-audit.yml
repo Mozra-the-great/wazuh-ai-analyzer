@@ -1,0 +1,48 @@
+name: Dependency Audit
+
+# pip-audit checks the hash-pinned requirement files against the PyPI advisory
+# database. It is a separate workflow, not a step of `lint`: a new advisory can turn it
+# red without any change in the repo, which must not block unrelated pull requests.
+# The weekly schedule catches advisories that appear between pull requests.
+#
+# No `paths:` filter (convention C1), so the job could become a required check later.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install --require-hashes -r requirements-lint.txt
+      # --disable-pip reads the pins and hashes as they are, without resolving or
+      # installing anything. The files are audited one by one: they pin shared
+      # packages at different versions.
+      - name: Audit the runtime and tool requirements
+        run: |
+          set -euo pipefail
+          for file in requirements.txt requirements-test.txt requirements-lint.txt; do
+            echo "::group::pip-audit ${file}"
+            pip-audit --require-hashes --disable-pip -r "${file}"
+            echo "::endgroup::"
+          done

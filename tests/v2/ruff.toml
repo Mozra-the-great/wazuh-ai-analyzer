@@ -1,0 +1,11 @@
+# Same rule set as the package, minus what tests legitimately do.
+extend = "../../wazuh_ai_analyzer/ruff.toml"
+
+[lint.per-file-ignores]
+"**" = [
+    "S101",  # assert
+    "S105",  # hard-coded dummy secrets are the point of several tests
+    "S106",
+    "S108",  # literal paths in assertions
+    "S608",  # SQL built from literals in the exporter copy
+]
