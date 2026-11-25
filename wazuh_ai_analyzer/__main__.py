@@ -112,8 +112,8 @@ def _run(config: Config) -> int:
     except InstanceLockError as exc:
         log.error("Not starting: %s", exc)
         return EXIT_FAILURE
-    service.start()
     try:
+        service.start()
         service.wait()
     finally:
         service.shutdown()

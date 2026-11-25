@@ -9,7 +9,9 @@ Startup order (that of `analyzer.py`):
 3. re-queue every `analyzing` batch (a restart killed whatever was in flight);
 4. `Ingest` (created only now, so its first batches cannot be swept by step 3)
    and `Ingest.load()` for `watermark.json`;
-5. threads: live workers, `history` (backlog), `live` (tail), `retry` (queue and
+5. the web server (waitress, in its own thread: a port that is taken stops the start
+   here, before anything is ingested);
+6. threads: live workers, `history` (backlog), `live` (tail), `retry` (queue and
    retention).
 
 `stop()` (SIGTERM/SIGINT through `__main__`) sets one event that every loop waits
@@ -27,6 +29,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final
 
 from .analysis import AnalysisBackend, create_backend
@@ -40,8 +43,15 @@ from .pipeline import Pipeline
 from .storage.db import Database
 from .storage.repo import Repository
 from .storage.schema import migrate
+from .web.app import LiveState, create_app
+from .web.server import WebServer
+from .web.sessions import SessionStore, load_or_create_session_key
 
 log = logging.getLogger(__name__)
+
+# The dashboard ships inside the package (Q4); `STATIC_DIR` of the legacy service is ignored.
+UI_DIR: Final = Path(__file__).resolve().parent / "web" / "ui"
+DEFAULT_STATIC_DIR: Final = Path("/opt/wazuh-ai-analyzer/static")
 
 # How long the stop waits for threads; below systemd's default TimeoutStopSec (90 s).
 STOP_GRACE_SECONDS: Final = 30.0
@@ -99,10 +109,35 @@ class Service:
             clock=clock,
         )
         self.ingest.load()
+        redactor = RedactSecrets(config.secret_values())
+        if config.paths.static_dir != DEFAULT_STATIC_DIR:
+            log.warning(
+                "STATIC_DIR is set but ignored: the dashboard is served from the package"
+                " (%s); remove the variable",
+                UI_DIR,
+            )
+        self.web = WebServer(
+            create_app(
+                config,
+                self.repo,
+                SessionStore(db, lifetime=config.web.session_lifetime, clock=clock),
+                self.live_state(),
+                session_key=load_or_create_session_key(config.paths.session_key_file),
+                ui_dir=UI_DIR,
+                clock=clock,
+            ),
+            host=config.web.listen_host,
+            port=config.web.port,
+            trusted_proxy=config.web.trusted_proxy_hops > 0,
+            redactor=redactor,
+        )
         self._threads: list[threading.Thread] = []
         self.failed = False
 
     def start(self) -> None:
+        # Binds the socket first: a taken port must not leave a half-started service.
+        web_thread = self.web.start()
+        self._threads.append(web_thread)
         self.pipeline.start()
         for name, target in (
             ("history", self.ingest.history_worker),
@@ -129,6 +164,7 @@ class Service:
     def shutdown(self, grace: float = STOP_GRACE_SECONDS) -> bool:
         """Stop everything; True if every thread ended within `grace` seconds."""
         self.stop_event.set()
+        self.web.close()
         deadline = time.monotonic() + grace
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
@@ -147,6 +183,15 @@ class Service:
     def runtime(self) -> dict[str, int | bool]:
         """The `runtime` block of `/api/stats`."""
         return runtime_counters(self.ingest.stats(), self.pipeline.counters.snapshot())
+
+    def live_state(self) -> LiveState:
+        """What the web layer reads from the running service."""
+        return LiveState(
+            runtime=self.runtime,
+            buffered_alerts=self.ingest.buffered_alerts,
+            quota=self.pipeline.quota.as_dict,
+            upstream=self.pipeline.upstream.as_dict,
+        )
 
     def _log_settings(self) -> None:
         c = self.config

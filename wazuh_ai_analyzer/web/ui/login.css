@@ -1,0 +1,45 @@
+/* Login page of the interim dashboard; no inline styles (strict CSP). */
+[hidden] { display: none !important; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #080c14; color: #e2e8f0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  min-height: 100vh; display: flex;
+  align-items: center; justify-content: center;
+}
+.card {
+  background: #0f1623; border: 1px solid rgba(255,255,255,.08);
+  border-radius: 18px; padding: 42px 44px 36px; width: 340px; max-width: 100%;
+  box-shadow: 0 24px 64px rgba(0,0,0,.6);
+}
+.logo { text-align: center; margin-bottom: 28px; }
+.logo-icon { font-size: 36px; display: block; margin-bottom: 10px; }
+.logo-title { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+.logo-sub { font-size: 11px; color: rgba(255,255,255,.3); letter-spacing: 1px; text-transform: uppercase; margin-top: 3px; }
+hr { border: none; border-top: 1px solid rgba(255,255,255,.07); margin: 0 0 24px; }
+.field { margin-bottom: 14px; }
+label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,.35); font-weight: 600; margin-bottom: 7px; }
+input[type=text], input[type=password] {
+  width: 100%; padding: 11px 14px;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.13);
+  border-radius: 10px; color: #fff; font-size: 14px; outline: none;
+  transition: border-color .2s;
+}
+input:focus { border-color: rgba(99,102,241,.7); background: rgba(255,255,255,.09); }
+.submit {
+  margin-top: 20px; width: 100%; padding: 12px;
+  background: #6366f1; border: none; border-radius: 10px;
+  color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+  letter-spacing: .3px; transition: opacity .2s;
+}
+.submit:hover { opacity: .85; }
+.submit:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+.submit:disabled { opacity: .5; cursor: default; }
+.err {
+  background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+  border-radius: 8px; color: #fca5a5; font-size: 12px;
+  padding: 10px 13px; margin-top: 14px; line-height: 1.5;
+}
+.footer { text-align: center; font-size: 10px; color: rgba(255,255,255,.15); margin-top: 24px; letter-spacing: .5px; }
+.confirm { text-align: center; }
+.confirm p { margin-bottom: 18px; font-size: 14px; }

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from v2.helpers import free_port
 from v2.ingest_support import lines, wait_for, write
 from v2.pipeline_support import KEY, FakeGemini, gemini_ok
 from wazuh_ai_analyzer import __main__ as cli
@@ -46,6 +47,7 @@ def make_config(tmp_path: Path, **env: str) -> Config:
         "RETRY_POLL": "0.05",
         "RETRY_PACE": "0.01",
         "GEMINI_CONCURRENCY": "1",
+        "PORT": str(free_port()),
         **env,
     }
     return load_config(values)
@@ -217,6 +219,7 @@ def _service_env(tmp_path: Path) -> dict[str, str]:
         "RETRY_BASE_DELAY": "0.1",
         "RETRY_MAX_DELAY": "0.5",
         "PYTHONPATH": str(REPO_ROOT),
+        "PORT": str(free_port()),
     }
     for name in ("PATH", "SYSTEMROOT", "LANG"):
         if name in os.environ:

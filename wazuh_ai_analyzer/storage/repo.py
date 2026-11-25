@@ -3,7 +3,10 @@
 P1 provides what the contract and the retention need: writing batches in every
 state, completing a batch with findings, and the retention purge. The pipeline
 (#85) adds the retry queue: claim, defer, requeue of stale rows and expiry. The
-read queries of the web layer (#86) are added to this class by that package.
+web layer (#86) adds the read queries behind `/api/*` (section "read API"): they take
+only validated values, bind every parameter, name every column explicitly (a future
+internal column cannot leak into an API response by accident) and never use
+`sqlite3.Row.get()` (#47: a Row has no such method).
 
 Values that external tools depend on (severity, source, status, mode, risk) are
 validated here before they reach the database: the schema of an existing install
@@ -38,6 +41,31 @@ from .db import Database
 log = logging.getLogger(__name__)
 
 SECONDS_PER_DAY = 86400.0
+
+# The columns `/api/batches` has always returned (`SELECT b.*` of the legacy code), plus
+# the additive ones of the rewrite. `raw_groups` and `last_error` hold attacker-influenced
+# text: the API returns them as JSON data and the UI must never render them as HTML.
+BATCH_API_COLUMNS = (
+    "id",
+    "created_at",
+    "alert_count",
+    "raw_groups",
+    "summary",
+    "overall_risk",
+    "status",
+    "source",
+    "attempts",
+    "next_attempt",
+    "first_error_at",
+    "last_error",
+    "claimed_at",
+    "bad_responses",
+    "mode",
+    "decision_version",
+)
+BATCHES_API_LIMIT = 50
+
+JsonObject = dict[str, object]
 
 _DELETE_FINDINGS_CHUNK = (
     "DELETE FROM findings WHERE batch_id IN ("
@@ -89,6 +117,18 @@ class BatchRecord:
     bad_responses: int
     mode: str
     decision_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StatsSnapshot:
+    """Database part of `/api/stats`, read in one transaction."""
+
+    total_findings: int
+    by_severity: dict[str, int]
+    last_analysis: str | None
+    batch_count: int  # status 'done'
+    by_status: dict[str, int]
+    history_batches_done: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +407,102 @@ class Repository:
             ).fetchall()
         return [_finding_record(row) for row in rows]
 
+    # ── read API (#86) ───────────────────────────────────────────────────────
+    def stats_snapshot(self) -> StatsSnapshot:
+        with self._db.reader() as conn:
+            conn.execute("BEGIN")  # one snapshot for all queries
+            total = int(conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
+            by_severity = {
+                str(row[0]): int(row[1])
+                for row in conn.execute("SELECT severity, COUNT(*) FROM findings GROUP BY severity")
+            }
+            last = conn.execute(
+                "SELECT created_at FROM batches WHERE status='done' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            by_status = {
+                str(row[0]): int(row[1])
+                for row in conn.execute("SELECT status, COUNT(*) FROM batches GROUP BY status")
+            }
+            history_done = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM batches WHERE source='history' AND status='done'"
+                ).fetchone()[0]
+            )
+        return StatsSnapshot(
+            total_findings=total,
+            by_severity=by_severity,
+            last_analysis=None if last is None else str(last[0]),
+            batch_count=by_status.get("done", 0),
+            by_status=by_status,
+            history_batches_done=history_done,
+        )
+
+    def list_findings(
+        self, *, limit: int, offset: int, severity: str | None, source: str | None
+    ) -> tuple[list[JsonObject], int]:
+        """A page of findings (newest first) and the total for the same filter.
+
+        `limit` and `offset` must be validated integers (`limit >= 1`: SQLite reads a
+        negative LIMIT as "no limit"); `severity` and `source` must be whitelisted.
+        """
+        if limit < 1 or offset < 0:
+            raise ValueError("limit must be at least 1 and offset must not be negative")
+        conditions: list[str] = []
+        params: list[object] = []
+        if severity is not None:
+            _check("severity", severity, SEVERITIES)
+            conditions.append("f.severity = ?")
+            params.append(severity)
+        if source is not None:
+            _check("source", source, SOURCES)
+            # NULL (rows of old versions) counts as 'live', like in the response.
+            conditions.append("COALESCE(b.source, 'live') = ?")
+            params.append(source)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        join = "FROM findings f JOIN batches b ON f.batch_id = b.id"
+        with self._db.reader() as conn:
+            conn.execute("BEGIN")
+            rows = conn.execute(
+                f"SELECT {_FINDING_COLUMNS} {join} {where}"
+                " ORDER BY f.id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) {join} {where}",
+                    params,
+                ).fetchone()[0]
+            )
+        return [_finding_json(row) for row in rows], total
+
+    def get_finding(self, finding_id: int) -> JsonObject | None:
+        if not 0 <= finding_id <= _SQLITE_MAX_INT:
+            return None
+        with self._db.reader() as conn:
+            row = conn.execute(
+                f"SELECT {_FINDING_COLUMNS}, b.summary AS batch_summary"  # noqa: S608
+                " FROM findings f JOIN batches b ON f.batch_id = b.id WHERE f.id = ?",
+                (finding_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        detail = _finding_json(row)
+        detail["batch_summary"] = row["batch_summary"]
+        detail["alert_count"] = row["alert_count"]
+        return detail
+
+    def list_batches(self, limit: int = BATCHES_API_LIMIT) -> list[JsonObject]:
+        columns = ", ".join(f"b.{name}" for name in BATCH_API_COLUMNS)
+        with self._db.reader() as conn:
+            rows = conn.execute(
+                f"SELECT {columns},"  # noqa: S608 - constants only
+                " (SELECT COUNT(*) FROM findings WHERE batch_id = b.id) AS finding_count"
+                " FROM batches b ORDER BY b.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        names = (*BATCH_API_COLUMNS, "finding_count")
+        return [{name: row[name] for name in names} for row in rows]
+
     # ── retention (#283) ─────────────────────────────────────────────────────
     def purge_old_batches(self, retention_days: float, *, chunk: int = 500) -> int:
         """Delete done/error batches (with their findings) older than `retention_days`.
@@ -409,6 +545,44 @@ class Repository:
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.Error:
             log.debug("WAL checkpoint after retention failed", exc_info=True)
+
+
+_SQLITE_MAX_INT = 2**63 - 1
+_FINDING_COLUMNS = (
+    "f.id, f.batch_id, f.title, f.severity, f.description, f.recommendation,"
+    " f.affected_agents, f.rule_ids, f.confidence, b.created_at AS batch_time,"
+    " b.alert_count, b.source AS batch_source, b.mode AS batch_mode"
+)
+
+
+def _json_list(raw: object) -> list[str]:
+    """A stored JSON list of strings; anything else (corrupt, wrong shape) is empty."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw else []
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _finding_json(row: sqlite3.Row) -> JsonObject:
+    """One finding as `/api/findings` returns it: the legacy keys, plus `confidence`
+    and `mode`. Every text field is data for the client, never markup."""
+    return {
+        "id": row["id"],
+        "batch_id": row["batch_id"],
+        "title": row["title"],
+        "severity": row["severity"],
+        "description": row["description"],
+        "recommendation": row["recommendation"],
+        "affected_agents": _json_list(row["affected_agents"]),
+        "rule_ids": _json_list(row["rule_ids"]),
+        "batch_time": row["batch_time"],
+        "source": row["batch_source"] or "live",
+        "confidence": row["confidence"],
+        "mode": row["batch_mode"] or "llm",
+    }
 
 
 def _finding_record(row: sqlite3.Row) -> FindingRecord:

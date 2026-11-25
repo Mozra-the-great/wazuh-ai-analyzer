@@ -76,6 +76,10 @@ jobs:
           python-version: "3.12"
       - name: Install type checker
         run: pip install --require-hashes -r requirements-lint.txt
+      # The rewrite imports flask, werkzeug and waitress, so mypy needs them (and their
+      # inline types). Installed second: requirements.txt pins certifi differently.
+      - name: Install the runtime dependencies for the type check
+        run: pip install --require-hashes -r requirements.txt
       # `strict = true` and the file list are in pyproject.toml.
       - name: mypy --strict
         run: mypy

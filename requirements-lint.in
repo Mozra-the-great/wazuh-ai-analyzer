@@ -11,3 +11,4 @@ types-requests==2.33.0.20261030
 pip-audit==2.10.1
 # mypy checks the tests too and needs pytest's type information.
 pytest==9.2.0
+types-waitress==3.0.1.20261122

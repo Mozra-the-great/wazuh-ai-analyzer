@@ -34,7 +34,12 @@ Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid co
 | Variable | Change |
 | --- | --- |
 | `GEMINI_MODEL` | Default is now `gemini-3.1-flash-lite`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
-| `SESSION_COOKIE_SECURE` | Strict boolean, see above. |
+| `SESSION_COOKIE_SECURE` | Strict boolean, see above. With `true` the cookies are named `__Host-wai_*` and HSTS is sent. |
+| `STATIC_DIR` | Accepted, ignored with a warning (the UI is part of the package). |
+| `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. |
+| session cookie | `SameSite=Strict` (was `Lax`), server-side sessions, name `wai_session` / `__Host-wai_session`. Existing sessions end at the cutover. |
+| login / logout | `POST /api/login` and `POST /api/logout` (JSON, CSRF token); `GET /logout` is a confirmation page. See `docs/web.md`. |
+| `/api/findings` | `limit` below 1 or non-numeric, a negative `offset` or an unknown `severity`/`source` is 400 (was: `limit=-1` returned all rows, non-numeric values were a 500). |
 | numeric variables | Range-checked (see the table) instead of accepted blindly. |
 | `RETENTION_CHUNK`, `GEMINI_CONCURRENCY` | A value below 1 is an error instead of being raised to 1. |
 
@@ -59,7 +64,7 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 | --- | --- | --- |
 | `WAZUH_ALERTS_LOG` | `/var/ossec/logs/alerts/alerts.json` | path |
 | `DB_PATH` | `/opt/wazuh-ai-analyzer/data/analyses.db` | path; `watermark.json` and `session.key` live next to it |
-| `STATIC_DIR` | `/opt/wazuh-ai-analyzer/static` | path (ignored once the UI ships inside the package) |
+| `STATIC_DIR` | `/opt/wazuh-ai-analyzer/static` | path; **ignored with a start-up warning**: the dashboard ships inside the package (the legacy `static/index.html` has inline code that the strict CSP forbids) |
 | `BATCH_MAX` | `25` | 1 to 10000 |
 | `BATCH_TIMEOUT` | `300` | 1 to 604800 seconds |
 | `BATCH_TIMEOUT_QUIET` | `0` | 0 to 604800 seconds; 0 = same as `BATCH_TIMEOUT` |

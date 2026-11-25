@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Anmelden</title>
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <span class="logo-icon" aria-hidden="true">🛡️</span>
+    <div class="logo-title">Wazuh AI Analyzer</div>
+    <div class="logo-sub">powered by Aeterna™</div>
+  </div>
+  <hr>
+  <form id="login-form" autocomplete="on">
+    <div class="field">
+      <label for="username">Benutzername</label>
+      <input type="text" id="username" name="username" autofocus autocomplete="username" placeholder="admin">
+    </div>
+    <div class="field">
+      <label for="password">Passwort</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <button type="submit" class="submit" id="submit">Anmelden</button>
+    <div class="err" id="error" role="alert" hidden></div>
+  </form>
+  <div class="footer">Sicherheitssystem · Nur autorisierter Zugriff</div>
+</div>
+<script src="/login.js"></script>
+</body>
+</html>
