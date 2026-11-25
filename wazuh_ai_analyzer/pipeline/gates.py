@@ -61,7 +61,8 @@ class QuotaState:
             self.exhausted = True
             self.retry_count += 1
             self.retry_at = now + retry_after
-            self.last_error_msg = message
+            # Same cap as `UpstreamState.last_error`: the text is shown in /api/stats.
+            self.last_error_msg = message[:UPSTREAM_ERROR_MAX]
             retry_at = iso_utc(self.retry_at)
         log.warning("Quota exhausted: %s | next attempt: %s", message, retry_at)
 

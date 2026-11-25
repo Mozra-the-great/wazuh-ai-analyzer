@@ -24,6 +24,7 @@ from typing import TextIO
 
 from . import __version__
 from .config import Config, ConfigError, load_config
+from .instance_lock import InstanceLockError
 from .logging_setup import configure_logging
 from .permissions import heal_database_files, prepare_data_dir
 from .service import Service
@@ -106,7 +107,11 @@ def _run(config: Config) -> int:
     if threading.current_thread() is threading.main_thread():
         _install_stop_signals(stop)
     log.info("Wazuh AI Analyzer %s starting", __version__)
-    service = Service(config, stop=stop)
+    try:
+        service = Service(config, stop=stop)
+    except InstanceLockError as exc:
+        log.error("Not starting: %s", exc)
+        return EXIT_FAILURE
     service.start()
     try:
         service.wait()

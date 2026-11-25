@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
 from collections.abc import Iterator
 
 import pytest
@@ -91,3 +93,41 @@ def test_configure_logging_protects_every_root_handler(capsys: pytest.CaptureFix
     captured = capsys.readouterr().err
     assert KEY not in captured
     assert captured.count("***") == 2
+
+
+@pytest.mark.usefixtures("restore_root_logging")
+def test_uncaught_exceptions_go_through_the_redaction(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    configure_logging([KEY])
+
+    try:
+        raise RuntimeError(f"upstream said {KEY}")
+    except RuntimeError as error:
+        sys.excepthook(type(error), error, error.__traceback__)
+
+    def crash() -> None:
+        raise ValueError(f"thread saw {KEY}")
+
+    worker = threading.Thread(target=crash, name="crasher")
+    worker.start()
+    worker.join()
+    captured = capsys.readouterr().err
+    assert KEY not in captured
+    assert "Uncaught exception" in captured
+    assert "RuntimeError" in captured
+    assert "Uncaught exception in thread crasher" in captured
+    assert "ValueError" in captured
+
+
+@pytest.mark.usefixtures("restore_root_logging")
+def test_ctrl_c_still_uses_the_default_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    configure_logging([KEY])
+    seen: list[type[BaseException]] = []
+    monkeypatch.setattr(sys, "__excepthook__", lambda t, e, tb: seen.append(t))
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert seen == [KeyboardInterrupt]

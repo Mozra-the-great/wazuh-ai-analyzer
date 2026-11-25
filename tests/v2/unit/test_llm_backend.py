@@ -258,3 +258,19 @@ def test_create_backend_builds_llm_and_refuses_decision_for_now() -> None:
     assert create_backend(load_config({})).name == "llm"
     with pytest.raises(ConfigError, match="ANALYSIS_MODE"):
         create_backend(load_config({"ANALYSIS_MODE": "decision"}))
+
+
+def test_a_secret_is_scrubbed_before_the_error_text_is_cut() -> None:
+    """The cut at 200 characters must not split the key into a form the redaction misses."""
+    body = "x" * 190 + KEY + " trailing"
+    failure = failure_of(backend(FakeResponse(400, text=body)))
+    assert KEY not in failure.message
+    assert KEY[:6] not in failure.message
+    assert failure.message.startswith("Gemini HTTP 400: ")
+    assert "***" in failure.message
+
+
+def test_a_secret_in_a_quota_text_is_scrubbed_before_the_cut() -> None:
+    failure = failure_of(backend(FakeResponse(429, text="y" * 140 + KEY)))
+    assert failure.kind == "quota"
+    assert KEY[:6] not in failure.message

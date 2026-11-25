@@ -3,6 +3,11 @@
 The filter sits on the root handlers, so it also covers library loggers (urllib3,
 werkzeug) whose messages can embed a request URL or a header dump. It masks the
 known secret values literally and the usual key patterns generically.
+
+Uncaught exceptions (`sys.excepthook`, `threading.excepthook`) are routed through
+logging as well (`install_exception_hooks`): the default hooks print the traceback
+straight to stderr, past every filter, and a traceback can embed a request URL or a
+header dump.
 """
 
 from __future__ import annotations
@@ -10,7 +15,9 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
 from collections.abc import Iterable
+from types import TracebackType
 
 LOG_FORMAT = "%(asctime)s  %(levelname)-7s  %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -52,6 +59,32 @@ class RedactSecrets(logging.Filter):
         return True
 
 
+def _log_uncaught(
+    exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+) -> None:
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    logging.getLogger("wazuh-ai").critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+
+
+def _log_uncaught_in_thread(args: threading.ExceptHookArgs) -> None:
+    if args.exc_type is SystemExit or args.exc_value is None:
+        return
+    name = args.thread.name if args.thread is not None else "unknown"
+    logging.getLogger("wazuh-ai").critical(
+        "Uncaught exception in thread %s",
+        name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+def install_exception_hooks() -> None:
+    """Send uncaught exceptions of the main and of every other thread to the log."""
+    sys.excepthook = _log_uncaught
+    threading.excepthook = _log_uncaught_in_thread
+
+
 def configure_logging(secrets: Iterable[str] = (), level: int = logging.INFO) -> RedactSecrets:
     """Set up root logging to stderr and attach the redaction filter to its handlers."""
     logging.basicConfig(
@@ -60,4 +93,5 @@ def configure_logging(secrets: Iterable[str] = (), level: int = logging.INFO) ->
     redactor = RedactSecrets(secrets)
     for handler in logging.getLogger().handlers:
         handler.addFilter(redactor)
+    install_exception_hooks()
     return redactor

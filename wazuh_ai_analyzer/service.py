@@ -2,6 +2,8 @@
 
 Startup order (that of `analyzer.py`):
 
+0. the instance lock (`<data dir>/.lock`): a second service on the same data
+   directory exits with an error before it touches anything;
 1. data directory and database: create/migrate, tighten the modes;
 2. the analysis backend for `ANALYSIS_MODE`;
 3. re-queue every `analyzing` batch (a restart killed whatever was in flight);
@@ -30,6 +32,7 @@ from typing import Final
 from .analysis import AnalysisBackend, create_backend
 from .config import Config
 from .ingest import Ingest
+from .instance_lock import InstanceLock
 from .logging_setup import RedactSecrets
 from .metrics.runtime import runtime_counters
 from .permissions import heal_database_files, prepare_data_dir
@@ -59,6 +62,17 @@ class Service:
         self.config = config
         self.stop_event = stop if stop is not None else threading.Event()
         prepare_data_dir(config.paths.data_dir)
+        self._lock = InstanceLock(config.paths.data_dir)
+        self._lock.acquire()
+        try:
+            self._init(config, backend_factory, clock)
+        except BaseException:
+            self._lock.release()
+            raise
+
+    def _init(
+        self, config: Config, backend_factory: BackendFactory, clock: Callable[[], float]
+    ) -> None:
         db = Database(config.paths.db_path)
         result = migrate(db)
         heal_database_files(config.paths.db_path)
@@ -119,6 +133,7 @@ class Service:
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         clean = self.pipeline.shutdown(max(0.0, deadline - time.monotonic()))
+        self._lock.release()
         hanging = [t.name for t in self._threads if t.is_alive()]
         if hanging or not clean:
             log.warning(

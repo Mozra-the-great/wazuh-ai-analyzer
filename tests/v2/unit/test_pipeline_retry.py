@@ -623,3 +623,13 @@ def test_suspicious_downgrades_are_counted(env: PipelineEnv) -> None:
     env.run(batch_id)
     assert env.stats()["suspicious_downgrades"] == 1
     assert env.findings(batch_id)[0]["severity"] == "info"  # flagged, never changed
+
+
+def test_quota_message_in_the_stats_is_capped_like_the_upstream_one() -> None:
+    from wazuh_ai_analyzer.pipeline.gates import UPSTREAM_ERROR_MAX, QuotaState
+
+    quota = QuotaState()
+    quota.mark_exhausted("q" * 5000, 60)
+    last_error = quota.as_dict()["last_error"]
+    assert isinstance(last_error, str)
+    assert len(last_error) == UPSTREAM_ERROR_MAX

@@ -13,6 +13,12 @@
 The position is committed to the watermark only after the batch holding every
 alert read so far is stored (or, with an empty buffer, after
 `WATERMARK_IDLE_COMMIT` seconds of idleness), so a crash re-reads but never loses.
+
+Backpressure: while the database refuses the batch, the buffered alerts stay in memory
+and the position stays put. Reading stops once `BACKPRESSURE_FACTOR * BATCH_MAX` alerts
+are buffered, so a long outage cannot fill the memory (or, while draining a rotated
+file, read it to its end into the buffer). The store is retried with an exponential
+backoff, and the error is logged in full once and then at most once a minute.
 """
 
 from __future__ import annotations
@@ -40,6 +46,11 @@ log = logging.getLogger(__name__)
 WATERMARK_IDLE_COMMIT: Final = 5.0
 POLL_INTERVAL: Final = 0.3
 RESTART_DELAY: Final = 10.0
+# Reading pauses when this many batches' worth of alerts wait for a failing store.
+BACKPRESSURE_FACTOR: Final = 2
+STORE_RETRY_BASE: Final = 1.0
+STORE_RETRY_MAX: Final = 30.0
+STORE_FAILURE_LOG_INTERVAL: Final = 60.0
 
 
 class CursorTracker:
@@ -87,6 +98,8 @@ class LiveTailer:
         idle_commit: float = WATERMARK_IDLE_COMMIT,
         poll_interval: float = POLL_INTERVAL,
         restart_delay: float = RESTART_DELAY,
+        store_retry_base: float = STORE_RETRY_BASE,
+        store_retry_max: float = STORE_RETRY_MAX,
     ) -> None:
         self._files = files
         self._path = str(files.alerts_log)
@@ -102,6 +115,13 @@ class LiveTailer:
         self._restart_delay = restart_delay
         self.buffer = LiveBuffer(batching, clock=clock)
         self.cursor = CursorTracker(watermark, clock)
+        self._buffer_limit = BACKPRESSURE_FACTOR * batching.batch_max
+        self._retry_base = store_retry_base
+        self._retry_max = store_retry_max
+        self._store_failures = 0  # consecutive failed stores
+        self._retry_at = 0.0  # no store attempt before this time while failing
+        self._next_failure_log = 0.0
+        self._failures_since_log = 0
 
     # ── alerts → batches ─────────────────────────────────────────────────────
     def _handle_line(self, data: bytes) -> None:
@@ -116,7 +136,7 @@ class LiveTailer:
         if parsed.alert is None:  # blank
             return
         self._counters.inc("processed")
-        if self.buffer.add(parsed.alert):
+        if self.buffer.add(parsed.alert) and self._store_allowed():
             self.flush()
 
     def _oversized(self, end: int) -> None:
@@ -127,18 +147,45 @@ class LiveTailer:
             end,
         )
 
-    def flush(self) -> None:
-        """Store the buffered alerts as one batch, then commit the position."""
+    def _store_allowed(self) -> bool:
+        """False while a failed store is backing off (one attempt per backoff step)."""
+        return self._store_failures == 0 or self._clock() >= self._retry_at
+
+    def _store_failed(self, count: int) -> None:
+        self._store_failures += 1
+        delay = min(self._retry_max, self._retry_base * 2.0 ** min(self._store_failures - 1, 16))
+        now = self._clock()
+        self._retry_at = now + delay
+        self.buffer.touch()
+        self._failures_since_log += 1
+        if now >= self._next_failure_log:
+            self._next_failure_log = now + STORE_FAILURE_LOG_INTERVAL
+            log.exception(
+                "Batch could not be stored (%d failed attempt(s) so far), %d alert(s) stay in"
+                " the buffer, next attempt in %gs",
+                self._failures_since_log,
+                count,
+                delay,
+            )
+            self._failures_since_log = 0
+
+    def flush(self) -> bool:
+        """Store the buffered alerts as one batch, then commit the position.
+
+        Returns False when the batch could not be stored: the alerts and the old
+        position are kept, and the next attempt waits for the backoff.
+        """
         alerts = self.buffer.peek()
         if not alerts:
-            return
+            return True
         try:
             stored = self._writer.store(alerts, "live")
         except Exception:
-            # Keep the alerts and the old position: the next flush tries again.
-            log.exception("Batch could not be stored, the alerts stay in the buffer")
-            self.buffer.touch()
-            return
+            self._store_failed(len(alerts))
+            return False
+        if self._store_failures:
+            log.info("Batch storage works again, %d buffered alert(s) stored", len(alerts))
+            self._store_failures = 0
         self.buffer.remove_flushed(len(alerts))
         self._counters.inc("batches_sent")
         self.cursor.commit()
@@ -147,6 +194,21 @@ class LiveTailer:
         except Exception:
             # The batch is stored as `analyzing`; the pipeline re-queues it.
             log.exception("Live: dispatching batch %d failed", stored.batch_id)
+        return True
+
+    def _wait_for_room(self, stop: threading.Event) -> bool:
+        """Block while the buffer is full because the store keeps failing.
+
+        Returns True when more lines may be read, False when `stop` was set meanwhile.
+        """
+        while len(self.buffer) >= self._buffer_limit:
+            if stop.is_set():
+                return False
+            if self._store_allowed():
+                self.flush()
+                continue
+            stop.wait(max(0.0, min(self._poll, self._retry_at - self._clock())))
+        return True
 
     # ── the file ─────────────────────────────────────────────────────────────
     def _open_live_log(self, stop: threading.Event) -> BinaryIO | None:
@@ -192,6 +254,8 @@ class LiveTailer:
             skipping = False  # inside a too long line whose end is not written yet
 
             while not stop.is_set():
+                if not self._wait_for_room(stop):
+                    break
                 if skipping:
                     _, complete = skip_to_newline(f, final=False)
                     if complete:
@@ -263,7 +327,7 @@ class LiveTailer:
                         st.st_ino,
                         pos,
                     )
-                    pos = self._drain_rotated(f, dev, ino, pos, head, skipping)
+                    pos = self._drain_rotated(f, dev, ino, pos, head, skipping, stop)
                     skipping = False
                     f.close()
                     f = new_f
@@ -289,7 +353,10 @@ class LiveTailer:
                 # Truly no data: sleep, maybe flush, maybe persist the position.
                 stop.wait(self._poll)
                 if len(self.buffer):
-                    if self.buffer.is_due():
+                    if self._store_failures:
+                        if self._store_allowed():
+                            self.flush()  # retry the failed store
+                    elif self.buffer.is_due():
                         log.info("Timeout flush: %d alerts", len(self.buffer))
                         self.flush()
                 elif (
@@ -301,7 +368,14 @@ class LiveTailer:
             f.close()
 
     def _drain_rotated(
-        self, f: BinaryIO, dev: int, ino: int, pos: int, head: str | None, skipping: bool
+        self,
+        f: BinaryIO,
+        dev: int,
+        ino: int,
+        pos: int,
+        head: str | None,
+        skipping: bool,
+        stop: threading.Event,
     ) -> int:
         """Read a rotated file to its end; the writer is gone, so an unterminated
         last line counts. Returns the final position."""
@@ -311,6 +385,8 @@ class LiveTailer:
             self.cursor.set(self._path, dev, ino, pos, head)
             self._oversized(pos)
         while True:
+            if not self._wait_for_room(stop):
+                return pos
             result = read_line(f, final=True)
             if result.kind is LineKind.EOF:
                 return pos

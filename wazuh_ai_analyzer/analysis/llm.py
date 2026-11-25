@@ -23,6 +23,7 @@ import requests
 
 from ..config import GeminiConfig
 from ..ingest.sanitize import AlertGroup
+from ..logging_setup import RedactSecrets
 from ..secret import Secret
 from ..storage.contract import AnalysisMode
 from .backend import AnalysisResult, BackendFailure, BatchContext
@@ -97,12 +98,14 @@ def is_config_error_body(resp: HttpResponse) -> bool:
     )
 
 
-def _quota_message(resp: HttpResponse) -> str:
+def _quota_message(resp: HttpResponse, scrub: Callable[[str], str]) -> str:
+    """The provider's own message, scrubbed *before* it is cut: a secret that the
+    cut splits in two would no longer match the redaction."""
     try:
-        message = resp.json().get("error", {}).get("message", "") or resp.text[:150]
+        message = resp.json().get("error", {}).get("message", "") or scrub(resp.text)[:150]
     except Exception:
-        message = resp.text[:150]
-    return str(message)
+        message = scrub(resp.text)[:150]
+    return scrub(str(message))
 
 
 def strip_code_fence(text: str) -> str:
@@ -124,8 +127,13 @@ class GeminiLlmBackend:
         infra_context: str,
         post: PostFunction = _default_post,
         nonce: Callable[[], str] = new_nonce,
+        scrub: Callable[[str], str] | None = None,
     ) -> None:
         self._api_key = api_key
+        if scrub is None:
+            secrets = (api_key.reveal(),) if api_key is not None else ()
+            scrub = RedactSecrets(secrets).scrub
+        self._scrub = scrub
         self._model = model
         self._temperature = temperature
         self._infra_context = infra_context
@@ -200,20 +208,18 @@ class GeminiLlmBackend:
             suspicious_downgrades=answer.suspicious_downgrades,
         )
 
-    @staticmethod
-    def _quota_failure(resp: HttpResponse) -> BackendFailure:
+    def _quota_failure(self, resp: HttpResponse) -> BackendFailure:
         retry_after = retry_after_seconds(resp)
-        message = _quota_message(resp)
+        message = _quota_message(resp, self._scrub)
         if retry_after <= 0:
             lowered = message.lower()
             daily = any(word in lowered for word in _DAILY_QUOTA_WORDS)
             retry_after = DAILY_QUOTA_WAIT if daily else MINUTE_QUOTA_WAIT
         return BackendFailure("quota", message, retry_after)
 
-    @staticmethod
-    def _http_failure(resp: HttpResponse) -> BackendFailure:
+    def _http_failure(self, resp: HttpResponse) -> BackendFailure:
         code = resp.status_code
-        message = f"Gemini HTTP {code}: {resp.text[:200]}"
+        message = f"Gemini HTTP {code}: {self._scrub(resp.text)[:200]}"
         log.error("%s", message)
         if code >= 500 or code in (408, 425):
             return BackendFailure("transient", message, retry_after_seconds(resp))
