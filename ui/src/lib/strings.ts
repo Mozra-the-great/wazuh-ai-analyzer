@@ -1,0 +1,128 @@
+// UI texts (German). kern's own texts (close buttons, pagination, ...) come from its `de` bundle.
+import type { Severity, Source } from './types.ts';
+
+export const SEVERITY_LABEL: Record<Severity, string> = {
+  critical: 'Kritisch',
+  high: 'Hoch',
+  medium: 'Mittel',
+  low: 'Niedrig',
+  info: 'Info',
+};
+
+export const SOURCE_LABEL: Record<Source, string> = { live: 'Live', history: 'Historisch' };
+
+export const T = {
+  appName: 'Wazuh AI Analyzer',
+  appSub: 'powered by Aeterna · Gemini AI',
+  skipLink: 'Zum Inhalt springen',
+  aiGenerated: 'KI-generiert, nicht verifiziert',
+  aiNote: 'Dieser Text stammt von einem KI-Modell und wurde nicht verifiziert.',
+  status: {
+    label: 'Status des Dienstes',
+    gemini: 'Gemini',
+    noKey: 'Kein API-Key',
+    quotaEmpty: 'Quota leer',
+    ok: 'Gemini OK',
+    buffered: (n: number): string => `${n} gepuffert`,
+    bufferedTitle: 'Alerts im Puffer',
+    queued: (n: number): string => `${n} warten`,
+    queuedTitle: 'Batches in der Retry-Queue',
+    lastAnalysis: 'Letzte Analyse',
+    none: 'Noch keine Analyse',
+  },
+  actions: {
+    reload: 'Neu laden',
+    reloading: 'Lädt …',
+    logout: 'Abmelden',
+    close: 'Schließen',
+  },
+  quota: {
+    title: 'Gemini-API-Quota erschöpft: Analyse pausiert',
+    paused: 'Pausiert',
+    body: 'Das Gemini-Kontingent ist vorübergehend aufgebraucht. Neue Alerts werden gepuffert und automatisch analysiert, sobald es wieder verfügbar ist.',
+    bodyWithError: (error: string): string =>
+      `Gemini-Fehlermeldung: „${error}“ Neue Alerts werden gepuffert und automatisch analysiert, sobald das Kontingent wieder verfügbar ist.`,
+    since: 'Erschöpft seit',
+    next: 'Nächster Versuch in',
+    attempts: 'Versuche',
+    queue: 'In der Retry-Queue',
+    queueUnit: (n: number): string => (n === 1 ? '1 Batch' : `${n} Batches`),
+    progress: 'Wartezeit bis zum nächsten Versuch',
+  },
+  history: {
+    title: 'Historische Logs werden analysiert …',
+    progress: 'Historische Analyse',
+    body: (done: number, total: number, alerts: number, batches: number): string =>
+      `Datei ${done} von ${total} gescannt · ${alerts} Alerts verarbeitet · ${batches} Batches analysiert`,
+  },
+  summary: {
+    title: 'KI-Zusammenfassung des letzten Analyse-Batches',
+    risk: 'Gesamtrisiko',
+  },
+  tiles: {
+    label: 'Findings nach Schweregrad',
+    all: 'Alle Findings',
+    filter: 'Schweregrad filtern',
+  },
+  list: {
+    heading: 'Findings',
+    sourceLabel: 'Quelle',
+    all: 'Alle',
+    count: (n: number): string => (n === 1 ? '1 Eintrag' : `${n} Einträge`),
+    caption: 'Findings, neueste zuerst',
+    columns: { severity: 'Schweregrad', title: 'Finding', time: 'Zeit', source: 'Quelle', agents: 'Systeme', rules: 'Regeln' },
+    rule: (ids: string): string => `Regel ${ids}`,
+    open: (title: string): string => `Details anzeigen: ${title}`,
+    emptyTitle: 'Keine Findings',
+    emptyBody: 'Wazuh-Alerts werden gesammelt und automatisch analysiert, sobald sie eintreffen.',
+    emptyFiltered: 'Keine Findings für diese Auswahl.',
+    errorTitle: 'Backend nicht erreichbar',
+    errorBody: 'Die Findings konnten nicht geladen werden. Auf dem Server hilft ein Blick in den Dienst:',
+    retry: 'Erneut versuchen',
+    pagination: 'Seiten der Findings',
+    loading: 'Findings werden geladen',
+  },
+  detail: {
+    title: 'Finding-Details',
+    problem: 'Was ist das Problem?',
+    recommendation: 'Handlungsempfehlung',
+    recommendationHint: 'KI-generiert, vor Umsetzung prüfen',
+    agents: 'Betroffene Systeme',
+    rules: 'Wazuh-Regel-IDs',
+    batch: 'Analyse',
+    analysed: (time: string, batch: number): string => `Analysiert ${time} · Batch #${batch}`,
+    history: 'historischer Scan',
+    alerts: (n: number): string => `${n} Alerts im Batch`,
+    batchSummary: 'Zusammenfassung des Batches',
+    summaryLoading: 'Zusammenfassung wird geladen',
+    summaryFailed: 'Die Zusammenfassung des Batches konnte nicht geladen werden.',
+    mode: { llm: 'KI-Text (Gemini)', decision: 'Entscheidungsmodell' } as Record<string, string>,
+    confidence: 'Konfidenz',
+    none: 'Keine Angabe',
+  },
+  toast: {
+    loadFailed: 'Aktualisierung fehlgeschlagen. Die Anzeige zeigt den letzten Stand.',
+    refreshed: 'Aktualisiert.',
+    logoutFailed: 'Abmelden fehlgeschlagen.',
+  },
+  login: {
+    title: 'Anmelden',
+    username: 'Benutzername',
+    password: 'Passwort',
+    submit: 'Anmelden',
+    footer: 'Sicherheitssystem · Nur autorisierter Zugriff',
+    noPassword: 'Kein Passwort konfiguriert. Bitte DASHBOARD_PASSWORD_HASH in der env-Datei setzen.',
+    wrong: (remaining: number): string =>
+      `Falscher Benutzername oder Passwort. (${remaining} Versuch(e) verbleibend)`,
+    tooMany: (seconds: number): string => `Zu viele Fehlversuche. Bitte ${seconds} s warten.`,
+    expired: 'Die Sitzung der Anmeldeseite ist abgelaufen. Bitte erneut versuchen.',
+    failed: 'Anmeldung nicht möglich.',
+    unreachable: 'Backend nicht erreichbar.',
+  },
+  logout: {
+    title: 'Abmelden',
+    question: 'Wirklich abmelden?',
+    submit: 'Abmelden',
+    failed: 'Abmelden fehlgeschlagen.',
+  },
+} as const;
