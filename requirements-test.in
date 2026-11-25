@@ -1,0 +1,15 @@
+# Test dependencies for the CI pytest jobs. Kept apart from requirements.in on purpose:
+# the analyzer's runtime install (install.sh) must not pull in test tools, and this file
+# is not part of checksums.sha256.
+#
+# exceptiongroup and tomli are pytest dependencies that only the Python 3.10 job needs
+# (they are part of the standard library from 3.11). pip-compile resolves for the Python
+# it runs on and would leave them out, so they are listed explicitly: one lock file then
+# installs on 3.10, 3.11 and 3.12 with --require-hashes.
+#
+# Regenerate (also to bump a version) with Python 3.12:
+#   pip install pip-tools
+#   pip-compile --generate-hashes --strip-extras --output-file=requirements-test.txt requirements-test.in
+pytest==9.2.0
+exceptiongroup==1.3.1
+tomli==2.5.0

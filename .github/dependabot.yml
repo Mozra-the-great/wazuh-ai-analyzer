@@ -10,7 +10,8 @@ version: 2
 #
 # Dependabot cannot read repository secrets, so the Claude jobs skip its PRs
 # (`github.actor != 'dependabot[bot]'`). Merge its PRs only after `pytest (3.10)`,
-# `pytest (3.12)` and `lint` ran on them.
+# `pytest (3.12)`, `mypy` and `lint` ran on them. The pip group also covers
+# requirements-lint.txt and requirements-test.txt (same pip-compile scheme).
 #
 # pip and the hash pinning (requirements.in -> requirements.txt, requirements-lint.in
 # -> requirements-lint.txt): dependabot-core recognises a pip-compile pair by the

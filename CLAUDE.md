@@ -12,36 +12,56 @@ never carries analyzer code. A change to `analyzer.py`, `static/index.html` or
 CI-only changes (workflows, lint config, tests) need no pin bump.
 
 ## Stack
-Python 3.10+ (CI runs 3.10 and 3.12), Flask + requests + werkzeug, SQLite (WAL),
-vanilla-JS frontend, installed as a systemd service by `install.sh`. Docs and
-code comments are German (README, scripts); keep that in existing files.
+Legacy service (`analyzer.py`): Python 3.10+, Flask + requests + werkzeug, SQLite (WAL),
+vanilla-JS frontend, installed as a systemd service by `install.sh`. Docs and code comments
+are German (README, scripts); keep that in existing files.
+
+Rewrite (epic #81, package `wazuh_ai_analyzer/`): Python >= 3.11, built next to the legacy
+service, which stays the deployed code path until the cutover. New code, tests and docs of
+the rewrite are English, typed (`mypy --strict`) and linted with the stricter
+`wazuh_ai_analyzer/ruff.toml`.
 
 ## Structure
 ```
-analyzer.py          the whole service (config is read from env at import time)
+analyzer.py          the whole legacy service (config is read from env at import time)
+wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_setup.py,
+                     storage/ (db, schema = versioned additive migrations, repo, retention,
+                     contract = frozen read interface); ingest/ pipeline/ analysis/ web/
+                     metrics/ are empty until their packages land. `python -m wazuh_ai_analyzer
+                     check-config|migrate`
+docs/configuration.md  every environment variable, defaults, valid ranges
+pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard
 install.sh           installer; verifies downloads against checksums.sha256
 scripts/release.sh   release helper: regenerates checksums.sha256, sets WAZUH_AI_REF
 checksums.sha256     sha256 of analyzer.py, static/index.html, requirements.txt
 requirements.in/.txt direct deps / fully hash-pinned lock (pip-compile --generate-hashes)
-requirements-lint.*  ruff for the CI lint job (same scheme)
-ruff.toml            lint rule set (pinned explicitly)
-tests/               pytest, one module per topic; conftest.py isolates all paths
-.github/workflows/   tests (pytest 3.10/3.12 + lint), workflow-lint, secret-scan,
-                     claude (@claude), claude-code-review
+requirements-lint.*  ruff, mypy, pip-audit for the CI jobs (same scheme)
+requirements-test.*  pytest for the CI test jobs (same scheme)
+ruff.toml            lint rule set of the legacy code (pinned explicitly); the rewrite has its own
+tests/               legacy tests, one module per topic; conftest.py isolates all paths
+tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface, exporter SQL),
+                     rollback/ (legacy analyzer on a migrated DB)
+.github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), dependency-audit,
+                     workflow-lint, secret-scan, claude (@claude), claude-code-review
 ```
 
 ## Commands
 ```sh
-pip install --require-hashes -r requirements.txt && pip install pytest
+pip install --require-hashes -r requirements.txt -r requirements-test.txt
 python -m pytest -q                      # tests (no network, no real Gemini key)
-pip install --require-hashes -r requirements-lint.txt && ruff check .
+python -m pytest -q --ignore=tests/v2    # legacy tests only (what the 3.10 job runs)
+pip install --require-hashes -r requirements-lint.txt && ruff check . && mypy
+pip-audit --require-hashes --disable-pip -r requirements.txt
 shellcheck install.sh scripts/release.sh
 sha256sum --check --strict checksums.sha256
 ```
-Bump a dependency: change the pin in `requirements.in`, then run the `pip-compile`
+Bump a dependency: change the pin in the `.in` file, then run the `pip-compile`
 command from its header with **Python 3.12** and keep the file header intact (Dependabot
-reads the Python version and the options from it).
+reads the Python version and the options from it). Compile on Linux: on Windows pip-compile
+adds `colorama`, which has to be removed by hand. `requirements-test.in` lists
+`exceptiongroup` and `tomli` explicitly because the 3.10 job needs them and pip-compile on
+3.12 would drop them.
 
 ## Rules that are easy to break
 - **checksums.sha256** must match the three files it lists, in the same commit as any
@@ -50,7 +70,17 @@ reads the Python version and the options from it).
 - Required check names (ruleset "Schütz mein Baum", active since 2026-10-21): `pytest (3.10)`,
   `pytest (3.12)`, `lint`, `CodeQL` (GitHub default setup), `workflow-lint`, `gitleaks`.
   Do not rename the jobs and do not add a `paths:` filter to workflows that provide them.
+  The rewrite needs 3.11, so `pytest (3.10)` is now the job `pytest-legacy` (legacy tests
+  only). When the maintainer has replaced the required check `pytest (3.10)` by
+  `pytest (3.11)` in the ruleset, delete that job. A new check becomes required only after
+  it has been green on `main`.
   `claude-review` is not required yet; add it once `CLAUDE_CODE_OAUTH_TOKEN` is set.
+- **The database schema is a public read interface** (the homelab exporter reads
+  `batches`, `findings`, `sqlite_sequence` and the German `last_error` prefixes). Only
+  additive changes, and every change goes through `storage/contract.py` and
+  `tests/v2/contract/`. The legacy analyzer must keep working on a migrated database
+  (`tests/v2/rollback/`, and the whole legacy suite runs on a migrated DB with
+  `LEGACY_SUITE_ON_MIGRATED_DB=1`).
 - The Gemini API key lives in the service environment only. Never print the
   environment, never commit `.env*`, never put real keys in tests (`conftest.py` uses a
   dummy).

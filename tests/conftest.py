@@ -43,8 +43,20 @@ def az(tmp_path, monkeypatch):
     monkeypatch.setattr(analyzer, "plan_ready", threading.Event())
     monkeypatch.setattr(analyzer, "_segment_failures", {})
     monkeypatch.setattr(analyzer, "HISTORY_PAUSE", 0)
+    if os.environ.get("LEGACY_SUITE_ON_MIGRATED_DB") == "1":
+        # Rollback proof (C3): run the legacy suite against a database that the
+        # rewrite's migrations created, so analyzer.py has to cope with the new schema.
+        _premigrate(data / "analyses.db")
     analyzer.init_db()
     return analyzer
+
+
+def _premigrate(db_path):
+    from wazuh_ai_analyzer.storage.db import Database
+    from wazuh_ai_analyzer.storage.schema import LATEST_VERSION, migrate
+
+    result = migrate(Database(db_path))
+    assert result.to_version == LATEST_VERSION
 
 
 @pytest.fixture

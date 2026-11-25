@@ -1,8 +1,13 @@
-# Lint tooling for CI (ruff). Kept apart from requirements.in on purpose: the
-# analyzer's runtime install (install.sh) must not pull in dev tools, and this
+# Tooling for the CI lint, type-check and audit jobs. Kept apart from requirements.in on
+# purpose: the analyzer's runtime install (install.sh) must not pull in dev tools, and this
 # file is not part of checksums.sha256.
 #
-# Regenerate (also to bump the version) with Python 3.12:
+# Regenerate (also to bump a version) with Python 3.12:
 #   pip install pip-tools
 #   pip-compile --generate-hashes --strip-extras --output-file=requirements-lint.txt requirements-lint.in
 ruff==0.17.5
+mypy==2.4.1
+types-requests==2.33.0.20261030
+pip-audit==2.10.1
+# mypy checks the tests too and needs pytest's type information.
+pytest==9.2.0
