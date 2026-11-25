@@ -21,7 +21,7 @@ from wazuh_ai_analyzer.service import UI_DIR, Service
 from wazuh_ai_analyzer.web.headers import build_csp
 from wazuh_ai_analyzer.web.server import IDENT, WebServer, protect_server_loggers
 
-SECRET = "dummy-server-secret-0007"
+MARKER = "dummy-server-secret-0007"
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def served(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[tuple[Web
         host="127.0.0.1",
         port=0,
         trusted_proxy=web.config.web.trusted_proxy_hops > 0,
-        redactor=RedactSecrets([SECRET]),
+        redactor=RedactSecrets([MARKER]),
     )
     server.start()
     try:
@@ -178,15 +178,15 @@ class Capture(logging.Handler):
 def test_server_loggers_are_redacted_after_their_setup(name: str) -> None:
     logger = logging.getLogger(name)
     handler = Capture()
-    redactor = RedactSecrets([SECRET])
+    redactor = RedactSecrets([MARKER])
     logger.addHandler(handler)  # a library adds its own handler during setup
     old_level = logger.level
     logger.setLevel(logging.INFO)
     try:
         protect_server_loggers(redactor)
-        logger.info("request to /x?key=%s failed (%s)", SECRET, SECRET)
+        logger.info("request to /x?key=%s failed (%s)", MARKER, MARKER)
         try:
-            raise RuntimeError(f"upstream said {SECRET}")
+            raise RuntimeError(f"upstream said {MARKER}")
         except RuntimeError:
             logger.exception("crash")
     finally:
@@ -194,7 +194,7 @@ def test_server_loggers_are_redacted_after_their_setup(name: str) -> None:
         logger.setLevel(old_level)
         logger.removeFilter(redactor)
     text = "\n".join(handler.lines)
-    assert SECRET not in text
+    assert MARKER not in text
     assert "***" in text
 
 

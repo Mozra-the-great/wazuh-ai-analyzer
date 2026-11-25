@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 from flask import Flask, Response, g, jsonify, redirect, request, send_file
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
@@ -229,8 +229,8 @@ def create_app(
         if _public_page(request.path) is not None:
             return None
         if g.session is None:
-            target = quote(request.path, safe="/")
-            return redirect(f"/login?next={target}")
+            # `next` is a local path only (checked again when the login uses it).
+            return redirect("/login?" + urlencode({"next": safe_next_path(request.path)}))
         return None
 
     def _public_page(path: str) -> str | None:
@@ -290,13 +290,17 @@ def create_app(
                 }
             )
         existing = request.cookies.get(pre_cookie)
-        reuse = existing is not None and is_pre_session_value(existing)
-        value = existing if reuse and existing is not None else new_pre_session_value()
+        if existing is not None and is_pre_session_value(existing):
+            # Keep the cookie the client has; only its token is handed out again.
+            return jsonify(
+                {"authenticated": False, "csrf_token": login_csrf_token(session_key, existing)}
+            )
+        # A cookie value the server made up itself, never one the client sent.
+        fresh = new_pre_session_value()
         response = jsonify(
-            {"authenticated": False, "csrf_token": login_csrf_token(session_key, value)}
+            {"authenticated": False, "csrf_token": login_csrf_token(session_key, fresh)}
         )
-        if value != existing:
-            set_cookie(response, pre_cookie, value, PRE_SESSION_LIFETIME)
+        set_cookie(response, pre_cookie, fresh, PRE_SESSION_LIFETIME)
         return response
 
     @app.post("/api/login")
