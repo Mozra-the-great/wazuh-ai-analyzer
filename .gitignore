@@ -4,3 +4,6 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .venv/
+
+# The dashboard build (`cd ui && npm ci && npm run build`); generated, never committed.
+/wazuh_ai_analyzer/web/ui/

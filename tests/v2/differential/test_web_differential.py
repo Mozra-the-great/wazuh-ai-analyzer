@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from flask.testing import FlaskClient
 
-from v2.web_support import HttpsClient, WebEnv, body, fixed_runtime, web_config
+from v2.web_support import FIXTURE_UI_DIR, HttpsClient, WebEnv, body, fixed_runtime, web_config
 from wazuh_ai_analyzer.storage.db import Database
 from wazuh_ai_analyzer.storage.repo import Repository
 from wazuh_ai_analyzer.storage.schema import migrate
@@ -24,7 +24,7 @@ from wazuh_ai_analyzer.web.app import LiveState, create_app
 from wazuh_ai_analyzer.web.auth import LoginLimiter
 from wazuh_ai_analyzer.web.sessions import SessionStore
 
-UI_DIR = Path(__file__).resolve().parents[3] / "wazuh_ai_analyzer" / "web" / "ui"
+UI_DIR = FIXTURE_UI_DIR
 
 
 def seed(az: ModuleType) -> list[int]:

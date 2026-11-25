@@ -12,12 +12,12 @@ import re
 from collections.abc import Iterable
 from typing import Final
 
-_HASH_RE: Final = re.compile(r"^sha256-[A-Za-z0-9+/]{43}=$")
+SCRIPT_HASH_RE: Final = re.compile(r"^sha256-[A-Za-z0-9+/]{43}=$")
 
 # Features the dashboard never uses.
 PERMISSIONS_POLICY: Final = (
     "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(),"
-    " microphone=(), payment=(), usb=(), interest-cohort=()"
+    " microphone=(), payment=(), usb=()"
 )
 HSTS: Final = "max-age=31536000"
 
@@ -26,7 +26,7 @@ def build_csp(script_hashes: Iterable[str] = ()) -> str:
     """`default-src 'self'` and explicit directives for everything the page uses."""
     scripts = ["'self'"]
     for digest in script_hashes:
-        if not _HASH_RE.match(digest):
+        if not SCRIPT_HASH_RE.match(digest):
             raise ValueError("a script hash must look like sha256-<44 base64 characters>")
         scripts.append(f"'{digest}'")
     return "; ".join(

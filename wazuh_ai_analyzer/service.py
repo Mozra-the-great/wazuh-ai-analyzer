@@ -46,6 +46,7 @@ from .storage.schema import migrate
 from .web.app import LiveState, create_app
 from .web.server import WebServer
 from .web.sessions import SessionStore, load_or_create_session_key
+from .web.ui_manifest import load_ui_manifest
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,13 @@ class Service:
                 " (%s); remove the variable",
                 UI_DIR,
             )
+        ui_manifest = load_ui_manifest(UI_DIR)
+        if not (UI_DIR / "index.html").is_file():
+            log.warning(
+                "The dashboard is not built (%s has no index.html): run `npm ci && npm run build`"
+                " in ui/, or use a release tarball",
+                UI_DIR,
+            )
         self.web = WebServer(
             create_app(
                 config,
@@ -124,6 +132,8 @@ class Service:
                 self.live_state(),
                 session_key=load_or_create_session_key(config.paths.session_key_file),
                 ui_dir=UI_DIR,
+                script_hashes=ui_manifest.script_hashes,
+                public_files=ui_manifest.public_files,
                 clock=clock,
             ),
             host=config.web.listen_host,

@@ -1,6 +1,5 @@
-/* Interim dashboard styles (until the kern UI of #87 replaces this directory).
-   Ported from static/index.html; no inline styles are needed: the page is served
-   under a CSP without 'unsafe-inline'. */
+/* Test fixture styles (stand-in for the dashboard build of ui/); no inline styles are needed:
+   the page is served under a CSP without 'unsafe-inline'. */
 [hidden] { display: none !important; }
 :root {
   --bg:       #080c14;

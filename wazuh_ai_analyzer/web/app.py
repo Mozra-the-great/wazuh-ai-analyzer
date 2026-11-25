@@ -133,6 +133,7 @@ def create_app(
     ui_dir: Path,
     limiter: LoginLimiter | None = None,
     script_hashes: tuple[str, ...] = (),
+    public_files: frozenset[str] = frozenset(),
     clock: Callable[[], float] = time.time,
 ) -> Flask:
     web = config.web
@@ -145,6 +146,8 @@ def create_app(
     )
     login_limiter = limiter if limiter is not None else LoginLimiter(web.login_max_attempts)
     site = StaticSite(ui_dir)
+    # The login and logout pages and, from the UI build manifest, the hashed files they load.
+    public_names = PUBLIC_FILES | public_files
     headers = security_headers(csp=build_csp(script_hashes), hsts=secure)
 
     app = Flask(__name__, static_folder=None)
@@ -236,7 +239,7 @@ def create_app(
     def _public_page(path: str) -> str | None:
         name = path.lstrip("/")
         name = PAGE_ALIASES.get(name, name)
-        return name if name in PUBLIC_FILES else None
+        return name if name in public_names else None
 
     @app.after_request
     def add_headers(response: Response) -> Response:

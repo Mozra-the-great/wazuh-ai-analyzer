@@ -17,7 +17,7 @@ from v2.pipeline_support import FakeGemini, gemini_ok
 from v2.unit.test_service import llm_factory, make_config
 from v2.web_support import PASSWORD, USER, WebEnv, make_web, password_hash
 from wazuh_ai_analyzer.logging_setup import RedactSecrets
-from wazuh_ai_analyzer.service import UI_DIR, Service
+from wazuh_ai_analyzer.service import Service
 from wazuh_ai_analyzer.web.headers import build_csp
 from wazuh_ai_analyzer.web.server import IDENT, WebServer, protect_server_loggers
 
@@ -273,6 +273,5 @@ def test_the_default_static_dir_needs_no_warning(
         service = Service(config, backend_factory=llm_factory(FakeGemini(gemini_ok())))
     try:
         assert "STATIC_DIR" not in caplog.text
-        assert (UI_DIR / "index.html").is_file()
     finally:
         service.shutdown(grace=5)
