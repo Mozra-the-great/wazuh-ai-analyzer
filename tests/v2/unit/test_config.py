@@ -271,7 +271,7 @@ def test_password_hash_is_a_secret() -> None:
 
 
 def test_repr_never_contains_secrets() -> None:
-    key = "AIzaSyDUMMYKEY-0123456789"
+    key = "dummy-config-secret-0001"
     hashed = "pbkdf2:sha256:600000$abcdefgh$" + "cd" * 32
     config = load_config({"GEMINI_API_KEY": key, "DASHBOARD_PASSWORD_HASH": hashed})
     for text in (repr(config), str(config), f"{config!r}", repr(config.gemini), repr(config.web)):
@@ -295,7 +295,7 @@ def test_derived_paths_sit_next_to_the_database() -> None:
 
 
 # ── API key sources ──────────────────────────────────────────────────────────
-KEY = "AIzaSyFILE-key-0123456789"
+KEY = "dummy-file-secret-0002"
 
 
 def _key_file(tmp_path: Path, content: str = KEY + "\n", mode: int = 0o600) -> Path:

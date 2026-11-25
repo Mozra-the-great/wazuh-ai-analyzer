@@ -17,7 +17,7 @@ from wazuh_ai_analyzer.secret import (
 )
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="needs POSIX owners and modes")
-VALUE = "AIza-super-secret-value"
+VALUE = "dummy-wrapper-secret-0005"
 
 
 def test_secret_never_shows_its_value() -> None:

@@ -9,7 +9,7 @@ import pytest
 
 from wazuh_ai_analyzer.logging_setup import RedactSecrets, configure_logging
 
-KEY = "AIzaSyREDACT-ME-0123456789"
+KEY = "dummy-redact-secret-0004"
 
 
 @pytest.fixture

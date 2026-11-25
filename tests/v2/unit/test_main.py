@@ -15,7 +15,7 @@ from wazuh_ai_analyzer import __main__ as cli
 from wazuh_ai_analyzer.storage.db import Database
 from wazuh_ai_analyzer.storage.schema import LATEST_VERSION, current_version
 
-KEY = "AIzaSyCLI-0123456789-KEY"
+KEY = "dummy-cli-secret-0003"
 HASH = "scrypt:32768:8:1$saltsalt$" + "ef" * 32
 
 
