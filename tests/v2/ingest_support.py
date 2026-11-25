@@ -160,6 +160,8 @@ class Harness:
             idle_commit=self.idle_commit,
             poll_interval=self.poll_interval,
             restart_delay=0.01,
+            store_retry_base=0.02,
+            store_retry_max=0.05,
         )
         self.worker = BacklogWorker(
             files=self.files,

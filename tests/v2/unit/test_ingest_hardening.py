@@ -422,19 +422,20 @@ def test_live_store_failure_keeps_the_alerts_and_the_position(h: Harness, repo: 
     h.configure(batch_max=2, batch_timeout=3600)
     write(h.alerts_log, b"")
     calls: list[int] = []
+    down = {"value": True}
 
-    def db_down_once(*_: object) -> None:
+    def db_down(*_: object) -> None:
         calls.append(1)
-        if len(calls) == 1:
+        if down["value"]:
             raise OSError("database is locked")
 
-    h.writer.fail = db_down_once
+    h.writer.fail = db_down
     t = h.run_tailer()
     try:
         assert h.plan_ready.wait(10)
         with h.alerts_log.open("ab") as fh:
             fh.write(lines(1, 2))
-        assert wait_for(lambda: len(calls) == 1)
+        assert wait_for(lambda: len(calls) >= 1)
         assert len(h.tailer.buffer) == 2
         assert h.flat() == []
         live = h.watermark.live
@@ -442,7 +443,10 @@ def test_live_store_failure_keeps_the_alerts_and_the_position(h: Harness, repo: 
         assert live["offset"] == 0
         with h.alerts_log.open("ab") as fh:
             fh.write(lines(3))
-        assert wait_for(lambda: h.flat() == ev(1, 2, 3))  # the next flush carries all three
+        assert wait_for(lambda: len(h.tailer.buffer) == 3)
+        assert h.flat() == []
+        down["value"] = False
+        assert wait_for(lambda: h.flat() == ev(1, 2, 3))  # the next store carries all three
     finally:
         t.close()
     assert t.error is None
@@ -476,3 +480,110 @@ def test_rotation_in_the_middle_of_a_batch_then_crash_loses_nothing(h: Harness) 
     h.start()
     h.drain()
     assert h.flat() == ev(1, 2, 3, 4, 5)
+
+
+# ── backpressure while the database refuses batches ──────────────────────────
+
+
+def test_failing_store_stops_reading_at_twice_the_batch_size_and_loses_nothing(
+    h: Harness, repo: Repository, caplog: pytest.LogCaptureFixture
+) -> None:
+    h.configure(batch_max=2, batch_timeout=3600)
+    write(h.alerts_log, b"")
+    attempts: list[int] = []
+    down = {"value": True}
+
+    def db_down(*_: object) -> None:
+        if down["value"]:
+            attempts.append(1)
+            raise OSError("database is locked")
+
+    h.writer.fail = db_down
+    total = 40
+    peak = 0
+    t = h.run_tailer()
+    try:
+        assert h.plan_ready.wait(10)
+        with h.alerts_log.open("ab") as fh:
+            fh.write(lines(*range(1, total + 1)))
+        # The buffer fills up to 2 * BATCH_MAX and reading stops there.
+        assert wait_for(lambda: len(h.tailer.buffer) == 4)
+        for _ in range(20):
+            peak = max(peak, len(h.tailer.buffer))
+            time.sleep(0.02)
+        live = h.tailer.cursor.value
+        assert live is not None
+        stalled_at = live["offset"]
+        assert stalled_at < h.alerts_log.stat().st_size
+        assert h.flat() == []
+        assert h.watermark.live is None or h.watermark.live["offset"] == 0
+        # The store is retried (with backoff), not once per line.
+        assert len(attempts) >= 2
+        assert len(attempts) < total
+        failures = [r for r in caplog.records if "could not be stored" in r.getMessage()]
+        assert len(failures) == 1  # the per-attempt error is throttled
+        down["value"] = False
+        assert wait_for(lambda: len(h.flat()) == total)
+        assert wait_for(lambda: len(h.tailer.buffer) == 0)
+    finally:
+        t.close()
+    assert peak == 4
+    assert t.error is None
+    # every alert exactly once, in order
+    assert h.flat() == ev(*range(1, total + 1))
+    live = h.tailer.cursor.committed
+    assert live is not None
+    assert live["offset"] == h.alerts_log.stat().st_size
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="renames a file that is open")
+def test_rotation_during_a_store_outage_loses_nothing_and_stays_bounded(h: Harness) -> None:
+    """The buffer stays at the limit while the file is rotated and the store is down."""
+    h.configure(batch_max=2, batch_timeout=3600)
+    write(h.alerts_log, lines(1))
+    down = {"value": False}
+
+    def db_down(*_: object) -> None:
+        if down["value"]:
+            raise OSError("database is locked")
+
+    h.writer.fail = db_down
+    t = h.run_tailer()
+    try:
+        assert h.plan_ready.wait(10)
+        h.drain()
+        down["value"] = True
+        with h.alerts_log.open("ab") as fh:
+            fh.write(lines(*range(2, 32)))
+        arch = archive_path(h.alerts_log, datetime.now().date(), ".json")
+        arch.parent.mkdir(parents=True, exist_ok=True)
+        h.alerts_log.rename(arch)
+        write(h.alerts_log, lines(100, 101))
+        assert wait_for(lambda: len(h.tailer.buffer) == 4)
+        time.sleep(0.3)
+        assert len(h.tailer.buffer) == 4
+        down["value"] = False
+        assert wait_for(lambda: len(h.flat()) == 1 + 30 + 2)
+    finally:
+        t.close()
+    assert sorted(h.flat()) == sorted(ev(1, *range(2, 32), 100, 101))
+
+
+def test_stop_while_the_store_is_down_ends_the_tailer(h: Harness) -> None:
+    h.configure(batch_max=2, batch_timeout=3600)
+    write(h.alerts_log, b"")
+
+    def db_down(*_: object) -> None:
+        raise OSError("database is locked")
+
+    h.writer.fail = db_down
+    t = h.run_tailer()
+    try:
+        assert h.plan_ready.wait(10)
+        with h.alerts_log.open("ab") as fh:
+            fh.write(lines(*range(1, 11)))
+        assert wait_for(lambda: len(h.tailer.buffer) == 4)
+    finally:
+        t.close()  # joins within 10 s although the tailer is blocked on the full buffer
+    assert t.error is None
+    assert h.watermark.live is None or h.watermark.live["offset"] == 0
