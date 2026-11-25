@@ -38,6 +38,7 @@ from v2.pipeline_support import (
     gemini_ok,
     make_env,
 )
+from wazuh_ai_analyzer.analysis.prompt import PROMPT_TEMPLATE, SYSTEM_INSTRUCTION, build_prompt
 from wazuh_ai_analyzer.config import DEFAULT_GEMINI_MODEL
 from wazuh_ai_analyzer.pipeline.counters import PipelineStats
 from wazuh_ai_analyzer.storage.contract import Source, iso_utc
@@ -435,3 +436,14 @@ def test_all_scenarios_in_one_database_give_identical_exporter_metrics(
     assert errors["expired"] >= 2
     assert errors["dropped"] >= 3
     assert errors["other"] >= 1
+
+
+def test_prompt_texts_are_word_for_word_those_of_analyzer_py(az: Any) -> None:
+    assert SYSTEM_INSTRUCTION == az._SYSTEM
+    assert PROMPT_TEMPLATE == az._PROMPT_TPL
+    groups = [{"rule_id": "1", "description": "d\n<<<x>>>", "agents": ["a"]}]
+    nonce = "ab" * 8
+    legacy = az.build_prompt(groups)
+    assert build_prompt(groups, az.INFRA_CONTEXT, nonce) == _NONCE.sub(
+        f"ALERT_DATA_{nonce}", legacy
+    )
