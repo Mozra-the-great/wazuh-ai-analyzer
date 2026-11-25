@@ -61,6 +61,15 @@ def error_bad_response(attempts: int, message: str) -> str:
     return f"bad_response nach {attempts} Versuchen: {message}"
 
 
+def error_unreadable_groups() -> str:
+    """A queued batch whose stored `raw_groups` cannot be read (counted as dropped_permanent).
+
+    The text has none of the exporter's prefixes, so the exporter counts it as `other`,
+    as it does for the legacy analyzer.
+    """
+    return "raw_groups nicht lesbar"
+
+
 def classify_error(last_error: str | None) -> str:
     """Python twin of the exporter's CASE expression (see the contract test).
 

@@ -1,9 +1,9 @@
 """All SQL of the analyzer lives here.
 
 P1 provides what the contract and the retention need: writing batches in every
-state, completing a batch with findings, and the retention purge. The queue
-claim/requeue statements of the pipeline (#85) and the read queries of the web
-layer (#86) are added to this class by those packages.
+state, completing a batch with findings, and the retention purge. The pipeline
+(#85) adds the retry queue: claim, defer, requeue of stale rows and expiry. The
+read queries of the web layer (#86) are added to this class by that package.
 
 Values that external tools depend on (severity, source, status, mode, risk) are
 validated here before they reach the database: the schema of an existing install
@@ -16,8 +16,9 @@ import json
 import logging
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, fields
+from typing import cast
 
 from .contract import (
     ANALYSIS_MODES,
@@ -88,6 +89,24 @@ class BatchRecord:
     bad_responses: int
     mode: str
     decision_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RetryState:
+    """The retry bookkeeping of one batch (#43)."""
+
+    attempts: int
+    first_error_at: str | None
+    bad_responses: int
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedBatch:
+    """A queued batch the retry worker has just moved to `analyzing`."""
+
+    id: int
+    raw_groups: str
+    source: Source
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +242,110 @@ class Repository:
                 " attempts=MAX(attempts, ?) WHERE id=?",
                 (reason, attempts, batch_id),
             )
+
+    # ── retry queue (#43, #85) ───────────────────────────────────────────────
+    def defer_batch(self, batch_id: int, *, next_attempt: float) -> None:
+        """Park a batch without having sent anything (gate closed): no attempt is used."""
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE batches SET status='pending', next_attempt=? WHERE id=?",
+                (next_attempt, batch_id),
+            )
+
+    def retry_state(self, batch_id: int) -> RetryState | None:
+        with self._db.reader() as conn:
+            row = conn.execute(
+                "SELECT attempts, first_error_at, bad_responses FROM batches WHERE id=?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RetryState(
+            attempts=int(row["attempts"] or 0),
+            first_error_at=row["first_error_at"],
+            bad_responses=int(row["bad_responses"] or 0),
+        )
+
+    def requeue_stale(self, *, claimed_before: float, busy: Collection[int]) -> list[int]:
+        """Put `analyzing` batches nobody works on back into the queue.
+
+        A row qualifies when it was claimed at or before `claimed_before` (or has no
+        `claimed_at`, as rows of old versions do) and its id is not in `busy`. Returns
+        the ids that were re-queued; they are due at once.
+        """
+        now = self._clock()
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id FROM batches WHERE status='analyzing'"
+                " AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY id",
+                (claimed_before,),
+            ).fetchall()
+            ids: list[int] = []
+            for row in rows:
+                batch_id = int(row["id"])
+                if batch_id in busy:
+                    continue
+                updated = conn.execute(
+                    "UPDATE batches SET status='pending', next_attempt=?"
+                    " WHERE id=? AND status='analyzing'",
+                    (now, batch_id),
+                ).rowcount
+                if updated == 1:
+                    ids.append(batch_id)
+        return ids
+
+    def expire_pending(self, *, created_before: str, reason: str) -> list[int]:
+        """Final failure for every `pending` batch created before `created_before`.
+
+        `created_before` is a `created_at` value (`contract.iso_utc`); the strings sort
+        like time. Build `reason` with `contract.error_queue_expired`. Returns the ids.
+        """
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id FROM batches WHERE status='pending' AND created_at < ? ORDER BY id",
+                (created_before,),
+            ).fetchall()
+            ids: list[int] = []
+            for row in rows:
+                updated = conn.execute(
+                    "UPDATE batches SET status='error', next_attempt=NULL, last_error=?"
+                    " WHERE id=? AND status='pending'",
+                    (reason, row["id"]),
+                ).rowcount
+                if updated == 1:
+                    ids.append(int(row["id"]))
+        return ids
+
+    def claim_next_due(self, now: float) -> ClaimedBatch | None:
+        """Move the next due `pending` batch to `analyzing` and return it.
+
+        Order: live batches first, then the newest (the queue is drained newest first,
+        so what expires under a long quota shortage is the oldest backlog). Returns
+        None when nothing is due or another worker claimed the row first.
+        """
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT id, raw_groups, source FROM batches"
+                " WHERE status='pending' AND COALESCE(next_attempt, 0) <= ?"
+                " ORDER BY (source = 'live') DESC, id DESC LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            claimed = conn.execute(
+                "UPDATE batches SET status='analyzing', claimed_at=?"
+                " WHERE id=? AND status='pending'",
+                (now, row["id"]),
+            ).rowcount
+        if claimed != 1:
+            return None
+        source = row["source"]
+        return ClaimedBatch(
+            id=int(row["id"]),
+            raw_groups=str(row["raw_groups"]),
+            # Rows of old versions may carry NULL; the column default is 'live'.
+            source=cast(Source, source) if source in SOURCES else "live",
+        )
 
     def get_batch(self, batch_id: int) -> BatchRecord | None:
         with self._db.reader() as conn:

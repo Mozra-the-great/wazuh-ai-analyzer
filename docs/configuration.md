@@ -8,7 +8,13 @@ unchanged. The configuration is parsed and validated once at startup.
 python -m wazuh_ai_analyzer check-config      # validate and print the effective settings
 python -m wazuh_ai_analyzer check-config --require-api-key
 python -m wazuh_ai_analyzer migrate           # create or migrate the database
+python -m wazuh_ai_analyzer run               # ingest + analysis until SIGTERM/SIGINT
 ```
+
+`run` migrates the database first, so `migrate` is optional before it. Until the web layer
+(#86) lands, `run` serves no dashboard; the deployed service is still `analyzer.py`.
+`ANALYSIS_MODE=decision` is accepted by `check-config` but `run` refuses it (exit code 78)
+until the decision backend (#88) exists.
 
 Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid configuration.
 

@@ -28,8 +28,11 @@ wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_
                      storage/ (db, schema = versioned additive migrations, repo, retention,
                      contract = frozen read interface); ingest/ (live tail, backlog,
                      watermark.json shared with analyzer.py, sanitize = the only gate for alert
-                     fields); pipeline/ analysis/ web/ metrics/ are empty until their packages
-                     land. `python -m wazuh_ai_analyzer check-config|migrate`
+                     fields); analysis/ (AnalysisBackend protocol, prompt + answer validation,
+                     llm = Gemini over plain REST); pipeline/ (retry queue, quota/upstream gates,
+                     workers); metrics/runtime.py (the `runtime` block of /api/stats);
+                     service.py (startup order, supervision, clean stop); web/ is empty until
+                     #86. `python -m wazuh_ai_analyzer check-config|migrate|run`
 docs/configuration.md  every environment variable, defaults, valid ranges
 pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard
@@ -82,7 +85,11 @@ adds `colorama`, which has to be removed by hand. `requirements-test.in` lists
   additive changes, and every change goes through `storage/contract.py` and
   `tests/v2/contract/`. The legacy analyzer must keep working on a migrated database
   (`tests/v2/rollback/`, and the whole legacy suite runs on a migrated DB with
-  `LEGACY_SUITE_ON_MIGRATED_DB=1`).
+  `LEGACY_SUITE_ON_MIGRATED_DB=1`). Final `last_error` texts are built only by the
+  `contract.error_*` helpers; `tests/v2/differential/test_pipeline_differential.py`
+  compares them word for word with `analyzer.py`.
+- Tests that touch the legacy module through the `az` fixture change its globals with
+  `monkeypatch` only: a plain assignment leaks into every later test.
 - **`watermark.json` is shared with `analyzer.py`** in both directions (cutover and
   rollback): keep its layout and the first-line digest (`ingest/archives.line_digest`)
   unchanged; `tests/v2/differential/` checks both directions.

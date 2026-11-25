@@ -183,9 +183,12 @@ def legacy_rows(db_path: Path | str) -> list[BatchRow]:
     return [(str(s), int(c), str(g)) for s, c, g in rows]
 
 
-def run_legacy(az: Any, steps: list[Step | str], history_batch: int) -> list[BatchRow]:
-    az.HISTORY_BATCH = history_batch
-    az._do_gemini_and_save = lambda *a, **k: None
+def run_legacy(
+    az: Any, steps: list[Step | str], history_batch: int, monkeypatch: pytest.MonkeyPatch
+) -> list[BatchRow]:
+    # monkeypatch, not plain assignment: the module is shared with later tests.
+    monkeypatch.setattr(az, "HISTORY_BATCH", history_batch)
+    monkeypatch.setattr(az, "_do_gemini_and_save", lambda *a, **k: None)
     log = Path(az.ALERTS_LOG)
     for step in steps:
         if step == START:
@@ -235,10 +238,10 @@ def run_new(
 
 @pytest.mark.parametrize("history_batch", [1, 7, 50])
 def test_multi_day_replay_gives_identical_batches(
-    az: Any, new_side: tuple[Harness, Path], history_batch: int
+    az: Any, new_side: tuple[Harness, Path], history_batch: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h, db_path = new_side
-    old = run_legacy(az, multi_day_scenario(), history_batch)
+    old = run_legacy(az, multi_day_scenario(), history_batch, monkeypatch)
     new = run_new(h, db_path, multi_day_scenario(), history_batch)
     assert len(old) > 5
     assert {s for s, _, _ in new} == {"history"}
@@ -426,13 +429,13 @@ def test_file_digests_match_the_legacy_code(az: Any, tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def shared(az: Any, tmp_path: Path) -> Harness:
+def shared(az: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Harness:
     """New ingest on the very files the legacy fixture uses (own database)."""
     db_path = tmp_path / "new-db" / "analyses.db"
     db_path.parent.mkdir()
     db = Database(db_path)
     migrate(db)
-    az._do_gemini_and_save = lambda *a, **k: None
+    monkeypatch.setattr(az, "_do_gemini_and_save", lambda *a, **k: None)
     return Harness(
         alerts_log=Path(az.ALERTS_LOG),
         watermark_path=Path(az.watermark.path),
