@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Security Dashboard</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">
+      <span class="logo-icon" aria-hidden="true">🛡️</span>
+      <div>
+        <div class="logo-text">Wazuh AI Analyzer</div>
+        <div class="logo-sub">powered by Aeterna™ · Gemini AI</div>
+      </div>
+    </div>
+    <div id="status-bar">
+      <span><span class="dot warn" id="gemini-dot"></span><span id="gemini-label">Gemini</span></span>
+      <span title="Alerts im Puffer">⏳ <span id="buf-count">0</span> gepuffert</span>
+      <span id="retry-queue-label" hidden>🔁 <span id="rq-count">0</span> warten</span>
+      <span id="last-label">–</span>
+      <button type="button" class="btn" id="refresh-btn">Reload</button>
+      <button type="button" class="btn" id="logout-btn" title="Abmelden">Abmelden</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="quota-banner" role="status" hidden>
+      <div class="qb-header">
+        <span class="qb-icon" aria-hidden="true">⚠️</span>
+        <span class="qb-title">Gemini API Quota erschöpft – Analyse pausiert</span>
+        <span class="qb-badge">PAUSIERT</span>
+      </div>
+      <div class="qb-body" id="quota-body"></div>
+      <div class="qb-meta">
+        <span>Erschöpft seit: <strong id="quota-since">–</strong></span>
+        <span>Nächster Versuch in: <strong id="quota-countdown">–</strong></span>
+        <span id="quota-retries" hidden>Versuche: <strong id="quota-retry-count">0</strong></span>
+        <span id="queue-waiting">In Retry-Queue: <strong id="rq-size">0</strong> Batch(es)</span>
+      </div>
+      <div id="quota-progress-wrap"><div id="quota-progress-bar"></div></div>
+    </div>
+
+    <div id="history-banner" role="status" hidden>
+      <div class="hb-header">
+        <span aria-hidden="true">📂</span>
+        <span class="hb-title">Historische Logs werden analysiert …</span>
+        <span id="hist-pct">0%</span>
+      </div>
+      <div class="hb-body" id="hist-body"></div>
+      <div id="hist-progress-wrap"><div id="hist-progress-bar"></div></div>
+    </div>
+
+    <div id="summary-banner" hidden>
+      <span class="sb-label">KI-Zusammenfassung · letzter Analyse-Batch (KI-generiert, nicht verifiziert)</span>
+      <span id="sb-risk-pill"></span>
+      <span id="sb-text"></span>
+    </div>
+
+    <div class="stat-row" id="stat-row">
+      <div class="stat-card" id="stat-all" data-filter="" role="button" tabindex="0">
+        <div class="stat-num" id="stat-total">–</div>
+        <div class="stat-label">Alle Findings</div>
+      </div>
+      <div class="stat-card" data-sev="critical" data-filter="critical" role="button" tabindex="0">
+        <div class="stat-num" id="stat-critical">0</div>
+        <div class="stat-label">Kritisch</div>
+      </div>
+      <div class="stat-card" data-sev="high" data-filter="high" role="button" tabindex="0">
+        <div class="stat-num" id="stat-high">0</div>
+        <div class="stat-label">Hoch</div>
+      </div>
+      <div class="stat-card" data-sev="medium" data-filter="medium" role="button" tabindex="0">
+        <div class="stat-num" id="stat-medium">0</div>
+        <div class="stat-label">Mittel</div>
+      </div>
+      <div class="stat-card" data-sev="low" data-filter="low" role="button" tabindex="0">
+        <div class="stat-num" id="stat-low">0</div>
+        <div class="stat-label">Niedrig</div>
+      </div>
+      <div class="stat-card" data-sev="info" data-filter="info" role="button" tabindex="0">
+        <div class="stat-num" id="stat-info">0</div>
+        <div class="stat-label">Info</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="section-title" id="section-title">Alle Findings</div>
+      <div class="source-tabs" id="source-tabs">
+        <div class="tab active" id="tab-all" data-source="" role="button" tabindex="0">Alle</div>
+        <div class="tab" id="tab-live" data-source="live" role="button" tabindex="0">🟢 Live</div>
+        <div class="tab" id="tab-history" data-source="history" role="button" tabindex="0">📂 Historisch</div>
+      </div>
+      <span id="count-label"></span>
+    </div>
+
+    <div id="findings-list"></div>
+    <div id="pagination"></div>
+  </main>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -12,7 +12,8 @@ never carries analyzer code. A change to `analyzer.py`, `static/index.html` or
 CI-only changes (workflows, lint config, tests) need no pin bump.
 
 ## Stack
-Legacy service (`analyzer.py`): Python 3.10+, Flask + requests + werkzeug, SQLite (WAL),
+Legacy service (`analyzer.py`): Python 3.10+, Flask + requests + werkzeug (the rewrite adds
+waitress), SQLite (WAL),
 vanilla-JS frontend, installed as a systemd service by `install.sh`. Docs and code comments
 are German (README, scripts); keep that in existing files.
 
@@ -32,9 +33,11 @@ wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_
                      llm = Gemini over plain REST); pipeline/ (retry queue, quota/upstream gates,
                      workers); metrics/runtime.py (the `runtime` block of /api/stats);
                      service.py (startup order, supervision, clean stop); instance_lock.py
-                     (flock on data_dir/.lock, one service per data dir); web/ is empty until
-                     #86. `python -m wazuh_ai_analyzer check-config|migrate|run`
+                     (flock on data_dir/.lock, one service per data dir); web/ (waitress + Flask:
+                     auth, server-side sessions, CSRF, CSP, JSON API, static files, interim UI in
+                     web/ui/, see docs/web.md). `python -m wazuh_ai_analyzer check-config|migrate|run`
 docs/configuration.md  every environment variable, defaults, valid ranges
+docs/web.md          web layer: auth, sessions, CSRF, headers, API, rules for the UI (P5)
 pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard
 install.sh           installer; verifies downloads against checksums.sha256
