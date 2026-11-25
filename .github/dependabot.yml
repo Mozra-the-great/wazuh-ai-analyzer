@@ -41,6 +41,23 @@ updates:
     commit-message:
       prefix: "chore(actions)"
 
+  # The dashboard's npm dependencies (ui/package-lock.json). kern itself is a release tarball
+  # URL in package.json: Dependabot does not bump it; update it by hand as kern's consumer
+  # guide describes (the lockfile integrity hash pins the content). Every other dependency is
+  # bundled into the dashboard, so bumps wait for the same 7-day cooldown.
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(ui-deps)"
+    groups:
+      ui-dependencies:
+        patterns:
+          - "*"
+
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

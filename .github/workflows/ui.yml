@@ -1,0 +1,88 @@
+name: UI
+
+# The dashboard (`ui/`: Vite + Svelte 5 + kern). The build output is not committed; this job
+# proves that it builds reproducibly, passes lint and type checks, and loads under the real
+# backend CSP with zero violations (Playwright against `ui/e2e/server.py`, which runs the
+# production `create_app`). No `paths:` filter (convention C1): the job can become a required
+# check once it has been green on main.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # `npm ci` checks every package, kern's release tarball included, against the
+      # integrity hash of package-lock.json (and runs no install scripts: ui/.npmrc).
+      - name: Install the UI dependencies
+        run: npm ci
+      - name: Audit the dependencies that end up in the bundle
+        run: npm audit --omit=dev --audit-level=high
+      - name: Lint
+        run: npm run lint
+      - name: Type check (svelte-check, strict)
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+      # The same sources must give the same files: hashed asset names and the CSP hash in
+      # ui-manifest.json come out identical on a second build.
+      - name: The build is reproducible
+        run: |
+          set -euo pipefail
+          tree_hash() { (cd ../wazuh_ai_analyzer/web/ui && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum); }
+          first="$(tree_hash)"
+          npm run build
+          second="$(tree_hash)"
+          echo "first:  ${first}"
+          echo "second: ${second}"
+          [ "${first}" = "${second}" ]
+
+      - name: Install the backend requirements (for the Playwright tests)
+        working-directory: .
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install --require-hashes -r requirements-test.txt
+      - name: Backend tests on the built dashboard (manifest, CSP hash, public files)
+        working-directory: .
+        run: python -m pytest -q tests/v2/unit/test_web_app.py tests/v2/unit/test_ui_manifest.py
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests under the real CSP (zero violations)
+        env:
+          E2E_PYTHON: python
+        run: npm run e2e
+      - name: Playwright traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-traces
+          path: ui/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
