@@ -26,9 +26,10 @@ the rewrite are English, typed (`mypy --strict`) and linted with the stricter
 analyzer.py          the whole legacy service (config is read from env at import time)
 wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_setup.py,
                      storage/ (db, schema = versioned additive migrations, repo, retention,
-                     contract = frozen read interface); ingest/ pipeline/ analysis/ web/
-                     metrics/ are empty until their packages land. `python -m wazuh_ai_analyzer
-                     check-config|migrate`
+                     contract = frozen read interface); ingest/ (live tail, backlog,
+                     watermark.json shared with analyzer.py, sanitize = the only gate for alert
+                     fields); pipeline/ analysis/ web/ metrics/ are empty until their packages
+                     land. `python -m wazuh_ai_analyzer check-config|migrate`
 docs/configuration.md  every environment variable, defaults, valid ranges
 pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard
@@ -41,7 +42,8 @@ requirements-test.*  pytest for the CI test jobs (same scheme)
 ruff.toml            lint rule set of the legacy code (pinned explicitly); the rewrite has its own
 tests/               legacy tests, one module per topic; conftest.py isolates all paths
 tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface, exporter SQL),
-                     rollback/ (legacy analyzer on a migrated DB)
+                     rollback/ (legacy analyzer on a migrated DB), differential/ (legacy and
+                     new code on the same input must give the same batches)
 .github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), dependency-audit,
                      workflow-lint, secret-scan, claude (@claude), claude-code-review
 ```
@@ -81,6 +83,9 @@ adds `colorama`, which has to be removed by hand. `requirements-test.in` lists
   `tests/v2/contract/`. The legacy analyzer must keep working on a migrated database
   (`tests/v2/rollback/`, and the whole legacy suite runs on a migrated DB with
   `LEGACY_SUITE_ON_MIGRATED_DB=1`).
+- **`watermark.json` is shared with `analyzer.py`** in both directions (cutover and
+  rollback): keep its layout and the first-line digest (`ingest/archives.line_digest`)
+  unchanged; `tests/v2/differential/` checks both directions.
 - The Gemini API key lives in the service environment only. Never print the
   environment, never commit `.env*`, never put real keys in tests (`conftest.py` uses a
   dummy).
