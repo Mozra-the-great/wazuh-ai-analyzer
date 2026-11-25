@@ -183,6 +183,7 @@ def test_invalid_lines_are_dropped_and_counted_live_and_in_the_backlog(h: Harnes
     h.drain()
     assert h.flat() == ev(1, 2)
     assert h.counters.snapshot().invalid_lines == 4
+    h.plan_ready.clear()  # wait for the tailer's own planning, not the one above
     t = h.run_tailer()
     try:
         assert h.plan_ready.wait(10)
