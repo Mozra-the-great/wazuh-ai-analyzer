@@ -203,7 +203,11 @@ jobs:
           if sudo nsenter -t "${pid}" -m -- touch /var/ossec/ci-write-test 2>/dev/null; then
             echo "/var/ossec must be read-only for the service"; exit 1
           fi
-          # the service user reads the alerts through an ACL, not through the group
+          # the service user reads the alerts through an ACL, not through the group: prove it in the
+          # mount namespace of the unit, as the service user
+          sudo systemd-run --quiet --wait --pipe --collect -p User=wazuh-ai-analyzer \
+            -p TemporaryFileSystem=/var/ossec:ro -p BindReadOnlyPaths=/var/ossec/logs/alerts \
+            head -c 1 /var/ossec/logs/alerts/alerts.json >/dev/null
           sudo getfacl -p /var/ossec/logs/alerts | grep -q '^user:wazuh-ai-analyzer:r-x$'
           sudo getfacl -p /var/ossec/logs/alerts | grep -q '^default:user:wazuh-ai-analyzer:r-x$'
           if id -nG wazuh-ai-analyzer | tr ' ' '\n' | grep -qx wazuh; then
@@ -267,7 +271,7 @@ jobs:
             --gemini-key-file "${RUNNER_TEMP}/key" --alerts-access group \
             --seed-watermark "${RUNNER_TEMP}/watermark-copy.json" --no-start
           sudo sh -c 'printf "MIN_LEVEL=15\nSESSION_COOKIE_SECURE=false\n" >> /etc/wazuh-ai-analyzer-shadow.env'
-          sudo test "$(sudo stat -c '%U %a' /opt/wazuh-ai-analyzer/data-shadow/watermark.json)" = "wazuh-ai-analyzer 600"
+          sudo test "$(sudo stat -c '%U %a' /opt/wazuh-ai-analyzer/data-shadow/watermark.json)" = "wazuh-ai-analyzer-shadow 600"
           sudo systemctl enable --now wazuh-ai-analyzer-shadow
           sleep 8
           systemctl is-active wazuh-ai-analyzer
@@ -284,7 +288,11 @@ jobs:
           systemctl cat wazuh-ai-analyzer-shadow | grep -q 'LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini-shadow'
           systemctl cat wazuh-ai-analyzer-shadow | grep -q 'ReadWritePaths=/opt/wazuh-ai-analyzer/data-shadow'
           [ "$(readlink /opt/wazuh-ai-analyzer/current-shadow)" = "$(readlink /opt/wazuh-ai-analyzer/current)" ]
-          id -nG wazuh-ai-analyzer | tr ' ' '\n' | grep -qx wazuh   # the group path added the user
+          # the instance has its own system user, which the group path added to the alert group
+          [ "$(systemctl show -p User --value wazuh-ai-analyzer-shadow)" = "wazuh-ai-analyzer-shadow" ]
+          id -nG wazuh-ai-analyzer-shadow | tr ' ' '\n' | grep -qx wazuh
+          if id -nG wazuh-ai-analyzer | tr ' ' '\n' | grep -qx wazuh; then echo "production user in the alert group"; exit 1; fi
+          [ "$(sudo stat -c %U /opt/wazuh-ai-analyzer/data-shadow)" = "wazuh-ai-analyzer-shadow" ]
           pid="$(systemctl show -p MainPID --value wazuh-ai-analyzer-shadow)"
           grep -q '^CapEff:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
           [ "$(sudo nsenter -t "${pid}" -m -- ls -A /var/ossec)" = "logs" ]
@@ -293,6 +301,20 @@ jobs:
             echo "the shadow instance must not write the production data directory"; exit 1
           fi
           journalctl -u wazuh-ai-analyzer-shadow --no-pager -n 20
+          # an ACL install takes a user out of the alert group that an earlier install put it into
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin wazuh-ai-analyzer-drop
+          sudo usermod -aG wazuh wazuh-ai-analyzer-drop
+          sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance drop \
+            --gemini-key-file "${RUNNER_TEMP}/key" --alerts-access acl --no-start
+          if id -nG wazuh-ai-analyzer-drop | tr ' ' '\n' | grep -qx wazuh; then
+            echo "the ACL install must remove the user from the alert group"; exit 1
+          fi
+          sudo getfacl -p /var/ossec/logs/alerts | grep -q '^user:wazuh-ai-analyzer-drop:r-x$'
+          # a seed that is not a watermark is refused (here: the credential file, as a service could link it)
+          if sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance other \
+            --gemini-key-file "${RUNNER_TEMP}/key" --seed-watermark "${RUNNER_TEMP}/key" --no-start; then
+            echo "a seed that is not a watermark must be refused"; exit 1
+          fi
           # a group that grants more than the alerts is refused, and nothing is installed
           sudo chgrp adm /var/ossec/logs/alerts/alerts.json
           if sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance other \

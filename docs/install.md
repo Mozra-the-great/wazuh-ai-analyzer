@@ -101,9 +101,11 @@ The service user must read `/var/ossec/logs/alerts`. `--alerts-access` chooses h
   refuses the group `root` (GID 0), `sudo`, `adm`, `shadow`, `disk` and `docker`: joining one of them
   would give the service far more than the alerts. Use `acl`, or give the alert log a dedicated group.
 
-An earlier installation put the service user into the `wazuh` group; the installer does not remove it.
-After the first run with an ACL, `gpasswd -d wazuh-ai-analyzer wazuh` takes it out again (restart the
-service afterwards).
+An earlier installation put the service user into the `wazuh` group. With the ACL in place that
+membership only widens what the service can read, so the installer removes it (`gpasswd -d`) and then
+checks, in the mount namespace of the unit and as the service user, that the alerts are still readable;
+if not, it puts the user back and warns. The removal takes effect when the service restarts, which the
+installer does next. With `--no-ossec-mask` the group stays: the host's directory permissions then decide.
 
 The unit also hides the rest of `/var/ossec` from the service (`TemporaryFileSystem=/var/ossec:ro` and
 `BindReadOnlyPaths=-/var/ossec/logs/alerts`): rules, agent keys, the manager's state and the other logs
@@ -142,17 +144,23 @@ service. The shadow instance is a complete second service from the same release:
 | | production | `--instance shadow` |
 | --- | --- | --- |
 | unit | `wazuh-ai-analyzer.service` | `wazuh-ai-analyzer-shadow.service` |
+| system user | `wazuh-ai-analyzer` | `wazuh-ai-analyzer-shadow` |
 | data directory (database, `watermark.json`, `session.key`, `.lock`) | `data/` | `data-shadow/` |
 | settings | `/etc/wazuh-ai-analyzer.env` | `/etc/wazuh-ai-analyzer-shadow.env` (`PORT=8766`, `ANALYSIS_MODE=decision`) |
 | credential | `/etc/wazuh-ai-analyzer/gemini` | `/etc/wazuh-ai-analyzer/gemini-shadow` |
 | release symlink | `current` | `current-shadow` |
 
-Both run as the same system user, but each unit may write only its own data directory
-(`ReadWritePaths=`), so the shadow instance cannot touch the production database. The instance lock
+Each instance runs as its own system user and may write only its own data directory
+(`ReadWritePaths=`; the directory belongs to that user, mode 0700), so a shadow instance cannot touch the
+production database, its session key or its process (two services under one UID could reach each other
+through `/proc/<pid>/root`). The instance name is at most 12 characters (the user name limit). The instance lock
 (`flock` on `<data dir>/.lock`) is per data directory, which is why both can run at once. Memory is
 limited per unit (`MemoryMax=256M`): plan for the sum of both.
 
-1. Copy the production watermark: `cp /opt/wazuh-ai-analyzer/data/watermark.json /root/watermark-copy.json`.
+1. Copy the production watermark, reading it **as the service user** (the data directory belongs to a
+   service that must not be able to point a root-made copy at another file):
+   `sudo -u wazuh-ai-analyzer cat /opt/wazuh-ai-analyzer/data/watermark.json | sudo tee /root/watermark-copy.json >/dev/null`.
+   The installer accepts only a watermark (JSON with `version` 2, at most 1 MiB) as `--seed-watermark`.
    Without a watermark the new service analyses the existing alert logs from the start, which costs
    Gemini quota and floods the shadow database; with the copy it continues from the same position.
    The file is replaced atomically by the running service, so a copy is always whole.

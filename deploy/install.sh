@@ -58,9 +58,10 @@ Usage: install.sh [--gemini-key-file FILE] [--unprivileged-lxc] [--no-ossec-mask
   --prefix DIR            install root (default: /opt/wazuh-ai-analyzer; the unit file
                           has the default path, the installer rewrites it)
   --instance NAME         install a second instance (shadow run): unit
-                          wazuh-ai-analyzer-NAME, data-NAME, /etc/wazuh-ai-analyzer-NAME.env,
-                          credential gemini-NAME, symlink current-NAME. NAME: a-z, 0-9,
-                          starts with a letter, at most 16 characters. The settings file of
+                          wazuh-ai-analyzer-NAME, system user wazuh-ai-analyzer-NAME,
+                          data-NAME, /etc/wazuh-ai-analyzer-NAME.env, credential gemini-NAME,
+                          symlink current-NAME. NAME: a-z, 0-9, starts with a letter, at most
+                          12 characters. The settings file of
                           an instance starts in ANALYSIS_MODE=decision on port 8766.
   --port PORT             dashboard port written into a new settings file (default 8765,
                           8766 for an instance)
@@ -96,7 +97,7 @@ done
 [[ "$PREFIX" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--prefix must be an absolute path of letters, digits, . _ - /"
 case "$ALERTS_ACCESS" in auto|acl|group) ;; *) die "--alerts-access must be auto, acl or group" ;; esac
 if [[ -n "$INSTANCE" ]]; then
-    [[ "$INSTANCE" =~ ^[a-z][a-z0-9]{0,15}$ ]] || die "--instance must be 1 to 16 characters of a-z and 0-9, starting with a letter"
+    [[ "$INSTANCE" =~ ^[a-z][a-z0-9]{0,11}$ ]] || die "--instance must be 1 to 12 characters of a-z and 0-9, starting with a letter"
 elif [[ -n "$SEED_WATERMARK" ]]; then
     die "--seed-watermark is for an --instance only: the production data directory is never overwritten"
 fi
@@ -110,6 +111,9 @@ fi
 SUFFIX=""
 [[ -z "$INSTANCE" ]] || SUFFIX="-$INSTANCE"
 SERVICE="$BASE_NAME$SUFFIX"
+# An instance runs as its own system user: two services under one UID could reach each
+# other through /proc/<pid>/root and the signals of that UID, whatever the unit says.
+SERVICE_USER="$SERVICE_USER$SUFFIX"
 ENV_FILE="/etc/$BASE_NAME$SUFFIX.env"
 CRED_FILE="$CRED_DIR/gemini$SUFFIX"
 CURRENT="$PREFIX/current$SUFFIX"
@@ -128,9 +132,9 @@ VERSION="$(<"$SRC/VERSION")"
 [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.-]*$ ]] || die "unexpected VERSION file"
 
 command -v "$PYTHON" >/dev/null 2>&1 || die "$PYTHON not found (Debian: apt install python3 python3-venv)"
-"$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+"$PYTHON" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
     || die "$PYTHON is older than 3.11"
-"$PYTHON" -c 'import venv, ensurepip' 2>/dev/null \
+"$PYTHON" -I -c 'import venv, ensurepip' 2>/dev/null \
     || die "the venv module is missing (Debian: apt install python3-venv)"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
@@ -152,6 +156,8 @@ if [[ -e "$PREFIX/releases" ]]; then
     [[ -d "$PREFIX/releases" ]] || die "$PREFIX/releases is not a directory"
     [[ "$(stat -c '%u' "$PREFIX/releases")" == 0 ]] \
         || die "$PREFIX/releases is not owned by root (a leftover of an old install?): check it, then chown root:root"
+    (( (8#$(stat -c '%a' "$PREFIX/releases") & 8#022) == 0 )) \
+        || die "$PREFIX/releases is writable by group or others: check it, then chmod 0755"
 fi
 if [[ -e "$DATA" ]]; then
     [[ -d "$DATA" ]] || die "$DATA is not a directory"
@@ -186,7 +192,7 @@ if [[ -n "$KEY_FILE" ]]; then
     [[ -s "$KEY_FILE" ]] || die "--gemini-key-file is empty"
     # A key in the settings file wins over the credential: the new file would be ignored.
     if [[ -f "$ENV_FILE" ]] \
-        && grep -Eq "^GEMINI_API_KEY(_FILE)?=[[:space:]]*(\"[^\"]|'[^']|[^\"'[:space:]])" "$ENV_FILE"; then
+        && grep -Eq "^[[:space:]]*GEMINI_API_KEY(_FILE)?=[[:space:]]*(\"[^\"]|'[^']|[^\"'[:space:]])" "$ENV_FILE"; then
         die "$ENV_FILE sets GEMINI_API_KEY or GEMINI_API_KEY_FILE, which wins over the credential file: remove that line (the key is in $KEY_FILE) or leave out --gemini-key-file"
     fi
 elif [[ -s "$CRED_FILE" ]]; then
@@ -200,6 +206,17 @@ fi
 if [[ -n "$SEED_WATERMARK" ]]; then
     [[ -f "$SEED_WATERMARK" && ! -L "$SEED_WATERMARK" ]] || die "--seed-watermark must be a regular file"
     [[ -s "$SEED_WATERMARK" ]] || die "--seed-watermark is empty"
+    # Only a watermark is copied: whatever else a root-made copy may have followed a link to
+    # (a service can leave a symlink in its data directory) is not valid watermark JSON.
+    "$PYTHON" -I -c 'import json, os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+data = os.read(fd, 1048577)
+if len(data) > 1048576:
+    sys.exit(1)
+doc = json.loads(data)
+ok = isinstance(doc, dict) and doc.get("version") == 2 and {"live", "backlog", "next_id"} <= set(doc)
+sys.exit(0 if ok else 1)' "$SEED_WATERMARK" 2>/dev/null \
+        || die "--seed-watermark is not a watermark.json (format version 2, at most 1 MiB)"
 fi
 
 # --- service user and directories ---------------------------------------------------------
@@ -211,7 +228,7 @@ fi
 # Read access to the Wazuh alerts. Preferred: an ACL on the alert directory for the service
 # user alone. Fallback: membership in the group that owns the log, which is refused for
 # groups that grant far more than the alerts.
-FORBIDDEN_GROUPS=" root sudo adm shadow disk docker "
+FORBIDDEN_GROUPS=" root sudo adm shadow disk docker wheel lxd incus libvirt kvm kmem staff systemd-journal "
 grant_alerts_by_group() {
     local group=wazuh detected gid
     if [[ -f "$ALERTS_DIR/alerts.json" ]]; then
@@ -233,6 +250,36 @@ grant_alerts_by_group() {
         info "added $SERVICE_USER to the group $group (read access to the alerts)"
     fi
 }
+# An earlier installation put the service user into the alert group. With the ACL in place
+# that membership only widens what the service can read (agent keys, ...): remove it once
+# the service user is shown to read the alerts without it.
+drop_alert_group_membership() {
+    local group
+    [[ -f "$ALERTS_DIR/alerts.json" ]] || return 0
+    group="$(stat -c '%G' "$ALERTS_DIR/alerts.json" 2>/dev/null || true)"
+    [[ -n "$group" && "$group" != UNKNOWN ]] || return 0
+    id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx "$group" || return 0
+    # Without the hiding of /var/ossec the host's directory permissions decide, and only the
+    # group lets the service through /var/ossec: keep it then.
+    if [[ "$NO_OSSEC_MASK" -eq 1 ]]; then
+        warn "$SERVICE_USER stays in the group $group: --no-ossec-mask needs it to reach the alerts"
+        return 0
+    fi
+    # The test runs in the mount namespace the unit gives the service (the alert directory
+    # bound into an empty /var/ossec), as the service user and with fresh group membership.
+    if command -v gpasswd >/dev/null 2>&1 && gpasswd -d "$SERVICE_USER" "$group" >/dev/null 2>&1; then
+        if systemd-run --quiet --wait --pipe --collect -p "User=$SERVICE_USER" \
+            -p TemporaryFileSystem=/var/ossec:ro -p "BindReadOnlyPaths=$ALERTS_DIR" \
+            test -r "$ALERTS_DIR/alerts.json" >/dev/null 2>&1; then
+            info "removed $SERVICE_USER from the group $group (the ACL is enough; applies at the next restart)"
+        else
+            usermod -aG "$group" "$SERVICE_USER"
+            warn "the ACL did not give $SERVICE_USER access to the alerts (or systemd-run cannot test it): it stays in the group $group"
+        fi
+    else
+        warn "$SERVICE_USER is still in the group $group; remove it with: gpasswd -d $SERVICE_USER $group"
+    fi
+}
 grant_alerts_by_acl() {
     # -P: never follow a symlink below the alert directory. The default ACL makes files that
     # Wazuh creates later (rotation, new days) readable as well.
@@ -246,6 +293,7 @@ case "$ALERTS_ACCESS" in
             warn "$ALERTS_DIR is not a directory; the service may not be able to read the alerts"
         elif command -v setfacl >/dev/null 2>&1 && grant_alerts_by_acl; then
             info "gave $SERVICE_USER read access to $ALERTS_DIR through an ACL (no group membership)"
+            drop_alert_group_membership
         elif [[ "$ALERTS_ACCESS" == acl ]]; then
             die "--alerts-access acl: setfacl is missing or failed on $ALERTS_DIR (apt install acl; the file system needs ACL support)"
         else
@@ -285,12 +333,12 @@ if [[ "$REUSE" -eq 0 ]]; then
     cp -R --no-preserve=ownership "$SRC/." "$RELEASE/"
 
     info "creating the venv (hash-pinned requirements, wheels only)"
-    "$PYTHON" -m venv "$RELEASE/venv"
+    "$PYTHON" -I -m venv "$RELEASE/venv"
     # --only-binary: nothing is built (no setup.py runs as root); --require-hashes: pip refuses
     # any file that is not listed with its sha256 in requirements.txt.
-    "$RELEASE/venv/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir \
+    "$RELEASE/venv/bin/python" -I -m pip install --quiet --disable-pip-version-check --no-cache-dir \
         --only-binary=:all: --require-hashes -r "$RELEASE/requirements.txt"
-    "$RELEASE/venv/bin/python" -m compileall -q "$RELEASE/wazuh_ai_analyzer"
+    "$RELEASE/venv/bin/python" -I -m compileall -q "$RELEASE/wazuh_ai_analyzer"
     : > "$RELEASE/.install-complete"
     chown -R root:root "$RELEASE"
     chmod -R go-w "$RELEASE"
@@ -326,6 +374,8 @@ sed -e "s#/opt/wazuh-ai-analyzer/current#$CURRENT#g" \
     -e "s#/etc/wazuh-ai-analyzer.env#$ENV_FILE#g" \
     -e "s#/etc/wazuh-ai-analyzer/gemini#$CRED_FILE#g" \
     -e "s#^Description=.*#Description=$description#" \
+    -e "s#^User=.*#User=$SERVICE_USER#" \
+    -e "s#^Group=.*#Group=$SERVICE_USER#" \
     -e "s#^SyslogIdentifier=.*#SyslogIdentifier=$SERVICE#" \
     "$SRC/deploy/wazuh-ai-analyzer.service" > "$UNIT.new"
 chmod 0644 "$UNIT.new"
@@ -381,7 +431,7 @@ port="$(env_value PORT "$LISTEN_PORT")"
 [[ "$port" =~ ^[0-9]+$ ]] || port="$LISTEN_PORT"
 for _ in $(seq 1 30); do
     systemctl is-active --quiet "$SERVICE" || break
-    if "$RELEASE/venv/bin/python" -c \
+    if "$RELEASE/venv/bin/python" -I -c \
         'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=2).close()' \
         "$host" "$port" 2>/dev/null; then
         info "service is up on $host:$port"

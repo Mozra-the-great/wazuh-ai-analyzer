@@ -330,11 +330,14 @@ def _read_proxy_addresses(reader: _Reader) -> tuple[IPNetwork, ...]:
         if not text:
             continue
         try:
-            networks.append(ipaddress.ip_network(text, strict=False))
+            network = ipaddress.ip_network(text, strict=False)
+            if network.prefixlen == 0:
+                raise ValueError("every address")
+            networks.append(network)
         except ValueError:
             reader.problems.append(
                 f"{ENV_TRUSTED_PROXY_ADDRESSES}: expected a comma-separated list of IP addresses"
-                " or networks (10.0.0.5, 192.168.0.0/24, ::1)"
+                " or networks, not 0.0.0.0/0 (10.0.0.5, 192.168.0.0/24, ::1)"
             )
             return ()
     return tuple(networks)

@@ -294,7 +294,9 @@ def test_trusted_proxy_addresses_allow_a_public_bind() -> None:
     ]
 
 
-@pytest.mark.parametrize("raw", ["not-an-ip", "10.0.0.5, nope", "10.0.0.0/33"])
+@pytest.mark.parametrize(
+    "raw", ["not-an-ip", "10.0.0.5, nope", "10.0.0.0/33", "0.0.0.0/0", "::/0", "10.0.0.5, ::/0"]
+)
 def test_invalid_trusted_proxy_addresses_are_rejected(raw: str) -> None:
     with pytest.raises(ConfigError, match="TRUSTED_PROXY_ADDRESSES"):
         load_config({"TRUSTED_PROXY_ADDRESSES": raw})
