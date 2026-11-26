@@ -117,9 +117,10 @@ jobs:
             wazuh_ai_analyzer/web/ui/index.html; do
             grep -q -x -E "[^/]+/${needed}" "${RUNNER_TEMP}/files.txt" || { echo "missing: ${needed}"; exit 1; }
           done
-          # SIL OFL texts of the two fonts that the dashboard ships
+          # SIL OFL texts of the three fonts that the dashboard ships
           grep -q '/licenses/npm/@fontsource-variable/inter@.*/LICENSE$' "${RUNNER_TEMP}/files.txt"
           grep -q '/licenses/npm/@fontsource-variable/jetbrains-mono@.*/LICENSE$' "${RUNNER_TEMP}/files.txt"
+          grep -q '/licenses/npm/@fontsource/silkscreen@.*/LICENSE$' "${RUNNER_TEMP}/files.txt"
           # nothing that must stay out
           if grep -E '(__pycache__|\.pyc$|/tests/|/\.env|\.pem$|\.key$|\.map$)' "${RUNNER_TEMP}/files.txt"; then
             echo "unexpected files in the tarball"; exit 1

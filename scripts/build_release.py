@@ -8,7 +8,7 @@ The tarball is what a deployment installs (see docs/install.md). It holds the Py
 package with the built dashboard (`wazuh_ai_analyzer/web/ui/`, git-ignored, so it exists
 only here), the hash-pinned `requirements.txt`, the systemd unit and installer under
 `deploy/`, the licenses (own, and every npm package that ends up in the dashboard bundle,
-including the SIL OFL texts of the two fonts), and the install notes.
+including the SIL OFL texts of the three fonts), and the install notes.
 
 Reproducible: the same commit and the same UI build give the same bytes. Entries are
 sorted, every mtime is SOURCE_DATE_EPOCH, owner and group are root:root (numeric 0),
@@ -266,10 +266,11 @@ def notices_text(table: Iterable[tuple[str, str, str]]) -> str:
         "",
         "## Dashboard (npm packages in the bundle under wazuh_ai_analyzer/web/ui/)",
         "",
-        "The full license texts are in licenses/npm/<package>@<version>/. The two fonts in",
-        "wazuh_ai_analyzer/web/ui/assets/ are Inter and JetBrains Mono (SIL Open Font License",
-        "1.1): licenses/npm/@fontsource-variable/inter@*/LICENSE and",
-        "licenses/npm/@fontsource-variable/jetbrains-mono@*/LICENSE.",
+        "The full license texts are in licenses/npm/<package>@<version>/. The three fonts in",
+        "wazuh_ai_analyzer/web/ui/assets/ are Inter, JetBrains Mono and Silkscreen (SIL Open",
+        "Font License 1.1): licenses/npm/@fontsource-variable/inter@*/LICENSE,",
+        "licenses/npm/@fontsource-variable/jetbrains-mono@*/LICENSE and",
+        "licenses/npm/@fontsource/silkscreen@*/LICENSE.",
         "",
         "| Package | Version | License |",
         "| --- | --- | --- |",

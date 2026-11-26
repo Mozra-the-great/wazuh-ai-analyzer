@@ -43,8 +43,12 @@ ENV_API_KEY_FILE: Final = "GEMINI_API_KEY_FILE"
 ENV_CREDENTIALS_DIRECTORY: Final = "CREDENTIALS_DIRECTORY"
 CREDENTIAL_NAME: Final = "gemini"
 
-# Q6: the legacy default `gemini-1.5-flash` has been retired by Google.
-DEFAULT_GEMINI_MODEL: Final = "gemini-3.1-flash-lite"
+# Q6/F137.6: the legacy default `gemini-1.5-flash` has been retired by Google. The default is
+# Google's `-latest` alias of the Flash-Lite family, so a retired model version no longer breaks a
+# default installation. The alias moves with every Flash-Lite release (announced two weeks ahead by
+# e-mail; limits and behaviour can change with it): pin a versioned model in GEMINI_MODEL when the
+# results must stay comparable (docs/configuration.md).
+DEFAULT_GEMINI_MODEL: Final = "gemini-flash-lite-latest"
 DEFAULT_DECISION_MODEL: Final = "gemini-decision-1"
 
 _INT_RE = re.compile(r"^[+-]?[0-9]{1,18}$")

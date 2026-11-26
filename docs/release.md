@@ -14,7 +14,7 @@ The single top directory `wazuh-ai-analyzer-<version>/` holds
 | `requirements.txt` | the hash-pinned runtime dependencies (same file as in the repository) |
 | `deploy/` | `wazuh-ai-analyzer.service`, `unprivileged-lxc.conf` (drop-in), `wazuh-ai-analyzer.env.example`, `install.sh` |
 | `INSTALL.md`, `docs/` | install and upgrade notes, configuration and web layer reference |
-| `LICENSE`, `THIRD-PARTY-NOTICES.md`, `licenses/npm/` | GPL-3.0 text, and the license text of every npm package in the dashboard bundle (from the lockfile's non-dev set), among them the SIL OFL 1.1 texts of the fonts Inter and JetBrains Mono. A package without a license file gets a generated `DECLARED-LICENSE.txt` with what its `package.json` declares |
+| `LICENSE`, `THIRD-PARTY-NOTICES.md`, `licenses/npm/` | GPL-3.0 text, and the license text of every npm package in the dashboard bundle (from the lockfile's non-dev set), among them the SIL OFL 1.1 texts of the fonts Inter, JetBrains Mono and Silkscreen. A package without a license file gets a generated `DECLARED-LICENSE.txt` with what its `package.json` declares |
 | `VERSION`, `BUILD-INFO.json` | version, commit and `SOURCE_DATE_EPOCH` of the build |
 
 `decisions/` (decision definitions) is included as soon as the directory exists.
