@@ -9,6 +9,7 @@
 Analysiert Wazuh SIEM-Alerts automatisch mit **Google Gemini AI** und stellt sie in einem Web-Dashboard dar – mit KI-Erklärung, Schweregrad-Einstufung und konkreten Handlungsempfehlungen auf Deutsch.
 
 Kostenlos nutzbar mit dem Google AI Studio Free Tier (Tageskontingent je Modell, aktuell 500 Anfragen/Tag für `gemini-3.1-flash-lite`; siehe [Anfragen sparen](#anfragen-sparen-gemini-free-tier)).
+Du brauchst einen eigenen API-Key; prüfe die Nutzungsbedingungen deines Anbieters.
 
 ---
 

@@ -134,8 +134,10 @@ All answers are JSON (`Content-Type: application/json`, `nosniff`). Errors are
 `ui/` is a plain Vite SPA (Svelte 5, TypeScript strict; not SvelteKit, because kern's strict-CSP
 test covers only the Vite path) on kern, theme `code` (dark by default, `code-light` through
 kern's `ThemeToggle`, the choice is kept in `localStorage` under `wai-theme`). Texts are German.
-Inter and JetBrains Mono come from pinned `@fontsource-variable` packages and are served from this
-origin (Latin subset); Silkscreen is not shipped, the display face falls back to JetBrains Mono.
+The fonts are the three that kern prescribes for `code` (kern ships none): Inter and JetBrains Mono
+from pinned `@fontsource-variable` packages, Silkscreen (weights 400 and 700, the display weight of
+`code`) from the pinned `@fontsource/silkscreen` package. All are served from this origin (Latin
+subset, `font-src 'self'`).
 
 * **Build:** `cd ui && npm ci && npm run build` writes `wazuh_ai_analyzer/web/ui/`. The output is
   generated, git-ignored and shipped in the release tarball (P7); a checkout that was never built

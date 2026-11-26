@@ -40,7 +40,7 @@ TABLE: list[tuple[str, Getter, Any]] = [
     ("HISTORY_BATCH", lambda c: c.batching.history_batch, 50),
     ("HISTORY_PAUSE", lambda c: c.batching.history_pause, 8.0),
     ("GEMINI_API_KEY", lambda c: c.gemini.api_key, None),
-    ("GEMINI_MODEL", lambda c: c.gemini.model, "gemini-3.1-flash-lite"),
+    ("GEMINI_MODEL", lambda c: c.gemini.model, "gemini-flash-lite-latest"),
     ("GEMINI_TEMPERATURE", lambda c: c.gemini.temperature, 0.15),
     ("GEMINI_CONCURRENCY", lambda c: c.gemini.concurrency, 2),
     ("INFRA_CONTEXT", lambda c: c.gemini.infra_context, "a self-hosted Linux server environment"),

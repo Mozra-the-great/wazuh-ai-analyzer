@@ -13,7 +13,7 @@ Read on 2026-11-26 from the official pages (Gemini Developer API only, not Verte
 - Decisions API guide: <https://aistudio.google.com/docs/decisions-api>
 - Model page: <https://aistudio.google.com/docs/models/gemini-decision-1>
 - Rate limits: <https://aistudio.google.com/docs/rate-limits>
-- Pricing, terms and the launch post are listed in the plan comment of #81.
+- Pricing and the launch post are listed in the plan comment of #81.
 - Python SDK walk-through (not used here): <https://codelabs.developers.google.com/getting-started-with-gemini-decisions-api>
 
 | Topic | Fact |
@@ -38,7 +38,7 @@ Read on 2026-11-26 from the official pages (Gemini Developer API only, not Verte
 - The release stage (preview or stable) and any deprecation date. The model id therefore
   comes from `DECISION_MODEL` and is never hard-coded in a request path; `llm` mode stays
   the documented fallback.
-- Data retention for this API. The Gemini API terms apply (see #81, finding R13).
+- Data retention for this API. Check the terms of your provider for the key you configure.
 
 The analyzer treats everything undocumented defensively: a 429 uses `Retry-After` when
 present and otherwise the same waits as `llm` mode (an hour when the text names a daily or

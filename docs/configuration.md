@@ -34,7 +34,7 @@ Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid co
 
 | Variable | Change |
 | --- | --- |
-| `GEMINI_MODEL` | Default is now `gemini-3.1-flash-lite`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
+| `GEMINI_MODEL` | Default is now `gemini-flash-lite-latest`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
 | `SESSION_COOKIE_SECURE` | Strict boolean, see above. With `true` the cookies are named `__Host-wai_*` and HSTS is sent. |
 | `STATIC_DIR` | Accepted, ignored with a warning (the UI is part of the package). |
 | `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. A value above 0 is refused unless `LISTEN_HOST` is a loopback address (the proxy runs on the same host) or `TRUSTED_PROXY_ADDRESSES` names the proxy: otherwise any client that reaches the port could send its own `X-Forwarded-For`. |
@@ -70,6 +70,20 @@ access (`mode & 0007 == 0`), and the file is opened relative to it.
 Without any key the service still starts (as `analyzer.py` does) and the dashboard shows
 "no key". `check-config --require-api-key` fails in that case.
 
+Configure your own API key and check your provider's terms for how you use it.
+
+## The model alias
+
+The default `GEMINI_MODEL` is `gemini-flash-lite-latest`, Google's alias for the newest release of
+the Flash-Lite family (<https://aistudio.google.com/docs/models>, section "Latest"; introduced in
+<https://developers.googleblog.com/en/continuing-to-bring-you-our-latest-models-with-an-improved-gemini-2-5-flash-and-flash-lite-release/>).
+It is a moving target: Google swaps the model behind it with every Flash-Lite release and announces
+the change two weeks ahead by e-mail. The model behind it can rate the same alerts differently, and
+its rate limits and free quota can change with it. A default installation therefore keeps working
+when a model version is retired, but its findings are only comparable within one model version.
+Set a versioned model (for example `gemini-3.1-flash-lite`) when you need stable behaviour, for
+instance while you compare findings over time.
+
 ## Variables
 
 | Variable | Default | Valid values |
@@ -86,7 +100,7 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 | `HISTORY_PAUSE` | `8.0` | 0 to 3600 seconds |
 | `GEMINI_API_KEY` | none | see above |
 | `GEMINI_API_KEY_FILE` | none | path (new) |
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | letters, digits, `.`, `_`, `-`, up to 100 characters |
+| `GEMINI_MODEL` | `gemini-flash-lite-latest` | letters, digits, `.`, `_`, `-`, up to 100 characters (see "The model alias" below) |
 | `GEMINI_TEMPERATURE` | `0.15` | 0 to 2 |
 | `GEMINI_CONCURRENCY` | `2` | 1 to 64 |
 | `INFRA_CONTEXT` | `a self-hosted Linux server environment` | printable text, up to 2000 characters |

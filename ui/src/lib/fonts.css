@@ -1,7 +1,8 @@
-/* Self-hosted fonts (decision Q5): Inter and JetBrains Mono from pinned @fontsource-variable
-   packages, Latin subset only, served from this origin (CSP: font-src 'self'). Silkscreen, which the
-   kern theme `code` would use for display text, is not shipped: see base.css. Both fonts are
-   licensed under the SIL OFL 1.1. */
+/* Self-hosted fonts: exactly the three faces kern prescribes for the theme `code` (Inter, JetBrains
+   Mono, Silkscreen; kern ships no fonts itself). Inter and JetBrains Mono come from pinned
+   @fontsource-variable packages, Silkscreen (400 and the display weight 700) from the pinned
+   @fontsource package. Latin subset only, served from this origin (CSP: font-src 'self'). All three
+   are licensed under the SIL OFL 1.1. */
 @font-face {
   font-family: 'Inter';
   font-style: normal;
@@ -17,5 +18,23 @@
   font-display: swap;
   font-weight: 100 800;
   src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Silkscreen';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../../node_modules/@fontsource/silkscreen/files/silkscreen-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Silkscreen';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('../../node_modules/@fontsource/silkscreen/files/silkscreen-latin-700-normal.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
