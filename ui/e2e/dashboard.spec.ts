@@ -208,6 +208,29 @@ test.describe('the dashboard', () => {
     await expect(opener).toBeFocused();
   });
 
+  test('a scrolling drawer body is exactly one named tab stop (kern#132)', async ({ browser, baseURL }) => {
+    // A short viewport makes the text-only detail overflow; kern then turns the body into a region.
+    const context = await browser.newContext({ viewport: { width: 360, height: 360 }, locale: 'de-DE' });
+    const page = await context.newPage();
+    const found = await watch(page);
+    await login(page);
+    await page.getByRole('table').locator('tbody tr').nth(1).getByRole('button').click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer).toBeVisible();
+    const region = drawer.getByRole('region', { name: 'Finding-Details' });
+    await expect(region).toHaveCount(1);
+    await expect(region).toHaveAttribute('tabindex', '0');
+    // The app itself adds no second tab stop on the detail content.
+    await expect(drawer.locator('article[tabindex]')).toHaveCount(0);
+    expect(await region.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    // axe (scrollable-region-focusable) and the CSP stay clean with the region in place.
+    await expect(page.getByText('Zusammenfassung des Batches')).toBeVisible();
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
+    expectClean(found, baseURL ?? '');
+    await context.close();
+  });
+
   test('the quota banner counts down and never puts server text through markup', async ({ page, baseURL }) => {
     setState(QUOTA_STATE(new Date(Date.now() + 300_000).toISOString()));
     const found = await watch(page);

@@ -4,6 +4,7 @@
     Drawer,
     EmptyState,
     LiveAnnouncer,
+    Navbar,
     Pagination,
     SegmentedControl,
     Skeleton,
@@ -48,18 +49,18 @@
 
 <SkipLink target="main" label={T.skipLink} />
 
-<!-- kern's Navbar is for link navigation and shows a menu button on narrow screens even without
-     links; this app has one page, so the header is plain markup on kern tokens. -->
-<header class="top">
-  <span class="brand">
-    <span class="brand-name">{T.appName}</span>
-    <span class="brand-sub muted">{T.appSub}</span>
-  </span>
-  <span class="nav-actions">
+<Navbar>
+  {#snippet brand()}
+    <span class="brand">
+      <span class="brand-name">{T.appName}</span>
+      <span class="brand-sub muted">{T.appSub}</span>
+    </span>
+  {/snippet}
+  {#snippet actions()}
     <ThemeToggle themes={[...THEMES]} persist={THEME_KEY} label="Dunkelmodus" />
     <Button variant="secondary" size="sm" onclick={() => void dash.logout()}>{T.actions.logout}</Button>
-  </span>
-</header>
+  {/snippet}
+</Navbar>
 
 <main id="main" class="page" tabindex="-1">
   <h1 class="sr-only">Security Dashboard</h1>
@@ -149,16 +150,6 @@
 <LiveAnnouncer />
 
 <style>
-  .top {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--k-space-2) var(--k-space-4);
-    padding: var(--k-space-3) var(--k-space-4);
-    border-bottom: var(--k-border-w) solid var(--k-line);
-    background: var(--k-bg-raised);
-  }
   .brand {
     display: grid;
     line-height: 1.2;
@@ -169,11 +160,6 @@
   }
   .brand-sub {
     font-size: var(--k-text-xs);
-  }
-  .nav-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--k-space-2);
   }
   .page {
     display: grid;
