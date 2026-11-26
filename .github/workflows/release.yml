@@ -1,0 +1,297 @@
+name: Release
+
+# Builds the release tarball of the rewrite (scripts/build_release.py) and proves it:
+#   build            builds the dashboard and the tarball TWICE (the second time from a
+#                    clean dashboard build and another working directory) and fails unless
+#                    the sha256 of both tarballs is identical;
+#   systemd-sandbox  installs the tarball with deploy/install.sh on the runner, starts the
+#                    service under the real unit, checks the LoadCredential key, the
+#                    sandbox and `systemd-analyze security`;
+#   publish          only for a `v*` tag: attests the tarball (build provenance) and attaches
+#                    tarball, SHA256SUMS and the attestation bundle to a GitHub release.
+# A pull request or a manual run (workflow_dispatch) never publishes anything. The tag must
+# equal `__version__` (the build refuses otherwise) and point to a commit on main.
+#
+# No `paths:` filter (convention C1): the workflow can become a required check later.
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  # Exposure level `systemd-analyze security` must stay at or below (lower is tighter).
+  # The runner is a normal VM, so this is the score of the full unit, not of the
+  # unprivileged-container drop-in.
+  MAX_EXPOSURE: "2.5"
+
+jobs:
+  build:
+    name: release-repro
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false # artifacts that get published must not come from a cache
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the dashboard dependencies (lockfile integrity, no install scripts)
+        working-directory: ui
+        run: npm ci
+
+      - name: Build the dashboard
+        working-directory: ui
+        run: npm run build
+
+      - name: Build the tarball (first time)
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          args=()
+          if [ "${REF_TYPE}" = "tag" ]; then
+            [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "bad tag name"; exit 1; }
+            args+=(--version "${REF_NAME#v}")
+          fi
+          python scripts/build_release.py "${args[@]}" --output "${RUNNER_TEMP}/first"
+
+      - name: Rebuild from a clean dashboard build and another directory
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          rm -rf wazuh_ai_analyzer/web/ui
+          (cd ui && npm run build)
+          args=()
+          if [ "${REF_TYPE}" = "tag" ]; then
+            args+=(--version "${REF_NAME#v}")
+          fi
+          cd "${RUNNER_TEMP}"
+          python "${GITHUB_WORKSPACE}/scripts/build_release.py" --root "${GITHUB_WORKSPACE}" \
+            "${args[@]}" --output "${RUNNER_TEMP}/second"
+
+      - name: The two tarballs are identical
+        run: |
+          set -euo pipefail
+          first="$(cat "${RUNNER_TEMP}/first/SHA256SUMS")"
+          second="$(cat "${RUNNER_TEMP}/second/SHA256SUMS")"
+          echo "first:  ${first}"
+          echo "second: ${second}"
+          [ "${first}" = "${second}" ]
+          cmp "${RUNNER_TEMP}/first/"*.tar.gz "${RUNNER_TEMP}/second/"*.tar.gz
+          echo "uncompressed tar sha256: $(gzip -dc "${RUNNER_TEMP}"/first/*.tar.gz | sha256sum | cut -d' ' -f1)"
+
+      - name: Inspect the tarball
+        run: |
+          set -euo pipefail
+          tarball="$(ls "${RUNNER_TEMP}"/first/*.tar.gz)"
+          (cd "${RUNNER_TEMP}/first" && sha256sum --check --strict SHA256SUMS)
+          tar -tzf "${tarball}" > "${RUNNER_TEMP}/files.txt"
+          wc -l "${RUNNER_TEMP}/files.txt"
+          for needed in \
+            VERSION BUILD-INFO.json INSTALL.md LICENSE THIRD-PARTY-NOTICES.md requirements.txt \
+            deploy/install.sh deploy/wazuh-ai-analyzer.service deploy/unprivileged-lxc.conf \
+            wazuh_ai_analyzer/__main__.py wazuh_ai_analyzer/web/ui/ui-manifest.json \
+            wazuh_ai_analyzer/web/ui/index.html; do
+            grep -q -x -E "[^/]+/${needed}" "${RUNNER_TEMP}/files.txt" || { echo "missing: ${needed}"; exit 1; }
+          done
+          # SIL OFL texts of the two fonts that the dashboard ships
+          grep -q '/licenses/npm/@fontsource-variable/inter@.*/LICENSE$' "${RUNNER_TEMP}/files.txt"
+          grep -q '/licenses/npm/@fontsource-variable/jetbrains-mono@.*/LICENSE$' "${RUNNER_TEMP}/files.txt"
+          # nothing that must stay out
+          if grep -E '(__pycache__|\.pyc$|/tests/|/\.env|\.pem$|\.key$|\.map$)' "${RUNNER_TEMP}/files.txt"; then
+            echo "unexpected files in the tarball"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/first/
+          if-no-files-found: error
+          retention-days: 14
+
+  systemd-sandbox:
+    name: release-systemd
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/dist
+
+      - name: Verify and extract the tarball
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/dist"
+          sha256sum --check --strict SHA256SUMS
+          mkdir "${RUNNER_TEMP}/extract"
+          tar -xzf ./*.tar.gz -C "${RUNNER_TEMP}/extract"
+          ls "${RUNNER_TEMP}/extract"
+
+      - name: Install with deploy/install.sh
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq python3-venv >/dev/null
+          # A made-up key: it is never sent anywhere (no alert passes MIN_LEVEL below).
+          printf 'ci-dummy-key-0123456789abcdef\n' > "${RUNNER_TEMP}/key"
+          # A Wazuh-like alert directory, owned by a group the service user joins.
+          sudo groupadd --system wazuh
+          sudo install -d -m 0750 -o root -g wazuh /var/ossec/logs/alerts
+          sudo sh -c 'printf "%s\n" "{\"timestamp\":\"2026-01-01T00:00:00.000+0000\",\"rule\":{\"id\":\"1\",\"level\":3,\"description\":\"ci\"},\"agent\":{\"name\":\"ci\"},\"full_log\":\"ci\"}" > /var/ossec/logs/alerts/alerts.json'
+          sudo chgrp wazuh /var/ossec/logs/alerts/alerts.json
+          sudo chmod 0640 /var/ossec/logs/alerts/alerts.json
+          # Dashboard login for this run only; the password never leaves the runner.
+          # MIN_LEVEL=15: the CI alert is read and filtered, nothing goes to the network.
+          sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --gemini-key-file "${RUNNER_TEMP}/key" --no-start
+          sudo sh -c 'printf "MIN_LEVEL=15\nSESSION_COOKIE_SECURE=false\n" >> /etc/wazuh-ai-analyzer.env'
+          pw_hash="$(printf 'ci-only-password' | /opt/wazuh-ai-analyzer/current/venv/bin/python -c 'import sys; from werkzeug.security import generate_password_hash as g; print(g(sys.stdin.read()))')"
+          sudo sed -i "s|^DASHBOARD_PASSWORD_HASH=.*|DASHBOARD_PASSWORD_HASH=${pw_hash}|" /etc/wazuh-ai-analyzer.env
+          sudo systemctl enable --now wazuh-ai-analyzer
+          sleep 8
+          systemctl status wazuh-ai-analyzer --no-pager || true
+
+      - name: The service runs in the sandbox
+        run: |
+          set -euo pipefail
+          systemctl is-active wazuh-ai-analyzer
+          [ "$(systemctl show -p NRestarts --value wazuh-ai-analyzer)" = "0" ]
+          # login page and the strict CSP
+          headers="$(curl -sS -D - -o /dev/null http://127.0.0.1:8765/login)"
+          echo "${headers}" | head -1
+          echo "${headers}" | grep -qi '^content-security-policy:.*script-src'
+          # the service started and created its database in the data directory
+          sudo test -f /opt/wazuh-ai-analyzer/data/analyses.db
+          sudo -u wazuh-ai-analyzer stat -c '%U %a %n' /opt/wazuh-ai-analyzer/data /opt/wazuh-ai-analyzer/data/analyses.db
+          # the process is not root, has no capabilities and cannot write outside the data dir
+          pid="$(systemctl show -p MainPID --value wazuh-ai-analyzer)"
+          grep -E '^(Uid|CapEff|CapBnd|NoNewPrivs|Seccomp):' "/proc/${pid}/status"
+          grep -q '^CapEff:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
+          grep -q '^CapBnd:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
+          grep -q '^NoNewPrivs:[[:space:]]*1$' "/proc/${pid}/status"
+          journalctl -u wazuh-ai-analyzer --no-pager -n 30
+
+      - name: The Gemini key arrives through LoadCredential
+        run: |
+          set -euo pipefail
+          # Same user, same credential, same environment file as the service; the key is
+          # printed masked by check-config and the command fails without a valid key.
+          sudo systemd-run --quiet --pipe --wait --collect \
+            -p User=wazuh-ai-analyzer -p LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini \
+            -p EnvironmentFile=/etc/wazuh-ai-analyzer.env \
+            /opt/wazuh-ai-analyzer/current/venv/bin/python -m wazuh_ai_analyzer check-config --require-api-key \
+            | grep -E '^gemini\.api_key = '
+          # how systemd presented the credential (owner and mode; not the content)
+          sudo systemd-run --quiet --pipe --wait --collect \
+            -p User=wazuh-ai-analyzer -p LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini \
+            /bin/sh -c 'stat -c "%U:%G %a" "$CREDENTIALS_DIRECTORY/gemini"'
+
+      - name: systemd-analyze security
+        run: |
+          set -euo pipefail
+          systemd-analyze --version | head -1
+          systemd-analyze security wazuh-ai-analyzer.service --no-pager | tee "${RUNNER_TEMP}/security.txt"
+          level="$(grep -oE 'exposure level for [^:]+: [0-9]+\.[0-9]+' "${RUNNER_TEMP}/security.txt" | grep -oE '[0-9]+\.[0-9]+$')"
+          echo "exposure level: ${level} (maximum ${MAX_EXPOSURE})"
+          awk -v level="${level}" -v max="${MAX_EXPOSURE}" 'BEGIN { exit !(level + 0 <= max + 0) }'
+
+      - name: Upgrade and rollback keep working
+        run: |
+          set -euo pipefail
+          # A second release directory stands in for an upgrade: switch, start, switch back.
+          current="$(readlink /opt/wazuh-ai-analyzer/current)"
+          sudo cp -a "/opt/wazuh-ai-analyzer/${current}" /opt/wazuh-ai-analyzer/releases/ci-upgrade-test
+          sudo ln -sfn releases/ci-upgrade-test /opt/wazuh-ai-analyzer/current
+          sudo systemctl restart wazuh-ai-analyzer
+          sleep 5
+          systemctl is-active wazuh-ai-analyzer
+          sudo ln -sfn "${current}" /opt/wazuh-ai-analyzer/current
+          sudo systemctl restart wazuh-ai-analyzer
+          sleep 5
+          systemctl is-active wazuh-ai-analyzer
+          # a second install of the same version is refused, not overwritten
+          if sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --no-start; then
+            echo "reinstall of an installed version must fail"; exit 1
+          fi
+
+  publish:
+    name: release-publish
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, systemd-sandbox]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the build provenance
+      attestations: write # store it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag points to a commit on main
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/dist
+      - name: Verify the artifact
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/dist"
+          sha256sum --check --strict SHA256SUMS
+          ls -l
+      - name: Attest the build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/*.tar.gz
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/dist"
+          tarball="$(ls ./*.tar.gz)"
+          cp "${BUNDLE}" "${tarball#./}.intoto.jsonl"
+          flags=()
+          if [[ "${TAG}" == *-* ]]; then flags+=(--prerelease); fi
+          {
+            echo "Release tarball of the Wazuh AI Analyzer ${TAG#v}. Installation and upgrade: INSTALL.md inside the tarball."
+            echo
+            echo "Verify before you extract:"
+            echo
+            echo '```sh'
+            echo 'sha256sum --check --strict SHA256SUMS'
+            echo "gh attestation verify ${tarball#./} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } > "${RUNNER_TEMP}/notes.md"
+          gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" "${flags[@]}" \
+            "${tarball}" SHA256SUMS "${tarball#./}.intoto.jsonl"

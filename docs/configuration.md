@@ -55,6 +55,14 @@ A key file must be a regular file (no symlink), owned by the service user, with 
 `0600` or `0400`, at most 4096 bytes. Otherwise the service refuses to start. A key is
 1 to 512 printable ASCII characters without whitespace.
 
+The file in `$CREDENTIALS_DIRECTORY` is judged less strictly, because systemd owns that
+directory and keeps it private to the service user. systemd normally chowns the credential
+to the service user (mode `0400`). When it cannot, for example in a container without a
+tmpfs for the credentials, it leaves the file owned by root and grants the service user read
+access through an ACL, so the mode shows `0440`. Both are accepted there: the owner is the
+service user or root, the group bits are ignored, and access for others is still refused.
+`GEMINI_API_KEY_FILE` always keeps the strict rule above.
+
 Without any key the service still starts (as `analyzer.py` does) and the dashboard shows
 "no key". `check-config --require-api-key` fails in that case.
 

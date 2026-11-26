@@ -360,13 +360,17 @@ def _read_api_key(reader: _Reader) -> Secret | None:
     if credentials is not None:
         candidate = Path(credentials) / CREDENTIAL_NAME
         if candidate.exists():
-            return _key_from_file(reader, "systemd credential 'gemini'", str(candidate))
+            return _key_from_file(
+                reader, "systemd credential 'gemini'", str(candidate), systemd_credential=True
+            )
     return None
 
 
-def _key_from_file(reader: _Reader, source: str, path: str) -> Secret | None:
+def _key_from_file(
+    reader: _Reader, source: str, path: str, *, systemd_credential: bool = False
+) -> Secret | None:
     try:
-        content = read_secret_file(path)
+        content = read_secret_file(path, systemd_credential=systemd_credential)
     except SecretFileError as exc:
         reader.problems.append(f"{source}: {exc}")
         return None
