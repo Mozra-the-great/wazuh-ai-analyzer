@@ -201,6 +201,7 @@ jobs:
           sudo systemd-run --quiet --pipe --wait --collect \
             -p User=wazuh-ai-analyzer -p LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini \
             -p EnvironmentFile=/etc/wazuh-ai-analyzer.env \
+            -p WorkingDirectory=/opt/wazuh-ai-analyzer/current \
             /opt/wazuh-ai-analyzer/current/venv/bin/python -m wazuh_ai_analyzer check-config --require-api-key \
             | grep -E '^gemini\.api_key = '
           # how systemd presented the credential (owner and mode; not the content)
