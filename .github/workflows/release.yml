@@ -28,10 +28,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
-  # Exposure level `systemd-analyze security` must stay at or below (lower is tighter).
-  # The runner is a normal VM, so this is the score of the full unit, not of the
-  # unprivileged-container drop-in.
-  MAX_EXPOSURE: "2.5"
+  # Exposure level `systemd-analyze security` must stay at or below (lower is tighter; the
+  # target of #90 is below 2.0, the unit scores 1.2). The runner is a normal VM, so this is
+  # the score of the full unit, not of the unprivileged-container drop-in.
+  MAX_EXPOSURE: "2.0"
 
 jobs:
   build:

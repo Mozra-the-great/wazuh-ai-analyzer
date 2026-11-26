@@ -131,5 +131,5 @@ drop-in and report it. A privileged container or a VM does not need the drop-in.
 systemd-analyze security wazuh-ai-analyzer.service --no-pager
 ```
 
-CI runs this on every build and fails above an exposure level of 2.5 (`docs/release.md` has the
-measured value and the options that remain open and why).
+The unit scores 1.2 (OK) on systemd 259; the CI build fails above 2.0. `docs/release.md` lists the
+remaining items and why they stay open.

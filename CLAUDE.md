@@ -42,7 +42,11 @@ pyproject.toml       project metadata, pytest and mypy configuration (no build b
 static/index.html    dashboard
 ui/                  the rewrite's dashboard: Vite + Svelte 5 + kern (source, lockfile, Vitest, Playwright e2e
                      with ui/e2e/server.py); `npm run build` writes wazuh_ai_analyzer/web/ui/ (git-ignored)
-install.sh           installer; verifies downloads against checksums.sha256
+deploy/              release tarball files of the rewrite: hardened systemd unit (LoadCredential), unprivileged-LXC
+                     drop-in, settings example, install.sh (tarball installer: releases/<version> + current symlink)
+scripts/build_release.py  reproducible release tarball (stdlib only); docs/release.md = build, release and sandbox
+                     notes, docs/install.md = install/upgrade notes (shipped in the tarball as INSTALL.md)
+install.sh           legacy installer; verifies downloads against checksums.sha256
 scripts/release.sh   release helper: regenerates checksums.sha256, sets WAZUH_AI_REF
 checksums.sha256     sha256 of analyzer.py, static/index.html, requirements.txt
 requirements.in/.txt direct deps / fully hash-pinned lock (pip-compile --generate-hashes)
@@ -54,7 +58,8 @@ tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface
                      rollback/ (legacy analyzer on a migrated DB), differential/ (legacy and
                      new code on the same input must give the same batches)
 .github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), ui (dashboard build +
-                     Playwright under the real CSP), dependency-audit, workflow-lint, secret-scan, claude (@claude), claude-code-review
+                     Playwright under the real CSP), release (tarball built twice + systemd sandbox test on the runner;
+                     publishes on `v*` tags only), dependency-audit, workflow-lint, secret-scan, claude (@claude), claude-code-review
 ```
 
 ## Commands
@@ -66,7 +71,8 @@ pip install --require-hashes -r requirements-lint.txt && ruff check . && mypy
 pip-audit --require-hashes --disable-pip -r requirements.txt
 (cd ui && npm ci && npm run lint && npm run check && npm test && npm run build)   # dashboard
 (cd ui && E2E_PYTHON=python npm run e2e)  # needs the build, the backend requirements, `npx playwright install chromium`
-shellcheck install.sh scripts/release.sh
+shellcheck install.sh scripts/release.sh deploy/install.sh
+(cd ui && npm ci && npm run build) && python scripts/build_release.py --output dist   # release tarball
 sha256sum --check --strict checksums.sha256
 ```
 Bump a dependency: change the pin in the `.in` file, then run the `pip-compile`
