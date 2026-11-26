@@ -12,6 +12,7 @@ import base64
 import hashlib
 import re
 import sqlite3
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -920,8 +921,32 @@ needs_build = pytest.mark.skipif(
 BUILT_PAGES = ("index.html", "login.html", "logout.html")
 
 
+class _InlineScripts(HTMLParser):
+    """The text of every `<script>` without `src` (a real parser, not a regular expression)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[str] = []
+        self._open = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script" and all(name != "src" for name, _ in attrs):
+            self._open = True
+            self.found.append("")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._open = False
+
+    def handle_data(self, data: str) -> None:
+        if self._open:
+            self.found[-1] += data
+
+
 def _inline_scripts(text: str) -> list[str]:
-    return re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", text, flags=re.DOTALL)
+    parser = _InlineScripts()
+    parser.feed(text)
+    return parser.found
 
 
 @needs_build
