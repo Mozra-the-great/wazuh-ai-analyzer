@@ -129,7 +129,7 @@ Run the installer from the new tarball (after step 1). The previous release stay
 `data/` is not touched otherwise. A release directory that the installer finished earlier for the very
 same build (for example by a shadow run) is reused instead of rebuilt; the installer refuses to run when
 that version is already the `current` release of the instance. To check a release before it goes live, use `--no-start`, then
-`python -m wazuh_ai_analyzer check-config` with the environment of the service, then restart.
+`python -m wazuh_ai_analyzer check-config` from the release directory with the environment of the service, then restart. For the shadow instance, use the command in "Shadow run", step 3.
 
 From the old single-file service (`analyzer.py`, installed by the old `install.sh`): the same command
 works. The old files in `/opt/wazuh-ai-analyzer/` (`analyzer.py`, `venv/`, `static/`) are left alone;
@@ -174,10 +174,15 @@ limited per unit (`MemoryMax=256M`): plan for the sum of both.
    The seed is copied only when `data-shadow/watermark.json` does not exist, with mode 0600 for the
    service user. Add `--unprivileged-lxc` in an unprivileged container, as for production.
 3. Set `DASHBOARD_PASSWORD_HASH` in `/etc/wazuh-ai-analyzer-shadow.env` (see above) and check the
-   settings with the environment of the instance:
+   settings as the shadow user, with the working directory, credential and environment of its unit. The
+   package lives in the release directory, so `WorkingDirectory=` is needed; the shadow user (not the
+   production user) shows that it can read the shadow credential:
 
    ```sh
-   sudo systemd-run --pipe --wait --collect -p User=wazuh-ai-analyzer \
+   sudo systemd-run --quiet --pipe --wait --collect \
+     -p User=wazuh-ai-analyzer-shadow \
+     -p WorkingDirectory=/opt/wazuh-ai-analyzer/current-shadow \
+     -p Environment=PYTHONDONTWRITEBYTECODE=1 \
      -p LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini-shadow \
      -p EnvironmentFile=/etc/wazuh-ai-analyzer-shadow.env \
      /opt/wazuh-ai-analyzer/current-shadow/venv/bin/python -m wazuh_ai_analyzer check-config
