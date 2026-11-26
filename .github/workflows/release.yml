@@ -275,9 +275,9 @@ jobs:
           # own port, own data directory (and so its own lock), own settings and credential
           [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/login)" = "200" ]
           [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8766/login)" = "200" ]
-          grep -q '^PORT=8766$' /etc/wazuh-ai-analyzer-shadow.env
-          grep -q '^ANALYSIS_MODE=decision$' /etc/wazuh-ai-analyzer-shadow.env
-          grep -q 'data-shadow' /etc/wazuh-ai-analyzer-shadow.env
+          sudo grep -q '^PORT=8766$' /etc/wazuh-ai-analyzer-shadow.env
+          sudo grep -q '^ANALYSIS_MODE=decision$' /etc/wazuh-ai-analyzer-shadow.env
+          sudo grep -q 'data-shadow' /etc/wazuh-ai-analyzer-shadow.env
           sudo test -f /opt/wazuh-ai-analyzer/data-shadow/analyses.db
           sudo test -f /opt/wazuh-ai-analyzer/data-shadow/.lock
           sudo test "$(sudo stat -c %a /etc/wazuh-ai-analyzer/gemini-shadow)" = "600"
