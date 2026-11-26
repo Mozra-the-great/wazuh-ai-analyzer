@@ -254,7 +254,7 @@ grant_alerts_by_group() {
 # that membership only widens what the service can read (agent keys, ...): remove it once
 # the service user is shown to read the alerts without it.
 drop_alert_group_membership() {
-    local group
+    local group probe
     [[ -f "$ALERTS_DIR/alerts.json" ]] || return 0
     group="$(stat -c '%G' "$ALERTS_DIR/alerts.json" 2>/dev/null || true)"
     [[ -n "$group" && "$group" != UNKNOWN ]] || return 0
@@ -268,12 +268,13 @@ drop_alert_group_membership() {
     # The test runs in the mount namespace the unit gives the service (the alert directory
     # bound into an empty /var/ossec), as the service user and with fresh group membership.
     if command -v gpasswd >/dev/null 2>&1 && gpasswd -d "$SERVICE_USER" "$group" >/dev/null 2>&1; then
-        if systemd-run --quiet --wait --pipe --collect -p "User=$SERVICE_USER" \
+        if probe="$(systemd-run --quiet --wait --pipe --collect -p "User=$SERVICE_USER" \
             -p TemporaryFileSystem=/var/ossec:ro -p "BindReadOnlyPaths=$ALERTS_DIR" \
-            test -r "$ALERTS_DIR/alerts.json" >/dev/null 2>&1; then
+            head -c 1 "$ALERTS_DIR/alerts.json" 2>&1 >/dev/null)"; then
             info "removed $SERVICE_USER from the group $group (the ACL is enough; applies at the next restart)"
         else
             usermod -aG "$group" "$SERVICE_USER"
+            [[ -z "$probe" ]] || warn "access test: $probe"
             warn "the ACL did not give $SERVICE_USER access to the alerts (or systemd-run cannot test it): it stays in the group $group"
         fi
     else
