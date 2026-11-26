@@ -18,9 +18,8 @@
 </script>
 
 <!-- Everything from the API below is attacker-influenced text: text nodes only, no markup. -->
-<!-- tabindex: the drawer body scrolls, and a scroll region must be reachable by keyboard -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<article class="detail" tabindex="0" aria-labelledby="d-title">
+<!-- No tabindex: kern's Drawer makes a scrolling body without focusable content a named tab stop itself. -->
+<article class="detail">
   <h3 id="d-title" class="title wrap">{finding.title}</h3>
   <div class="badges">
     <SeverityBadge severity={finding.severity} />
