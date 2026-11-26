@@ -1,6 +1,6 @@
-// Interim dashboard (until the kern UI of #87 replaces it).
+// Test fixture: a small CSP-clean stand-in for the built dashboard (the real one is built from ui/).
 //
-// Rules this file follows, and the kern UI must follow too:
+// Rules this file follows (the same ones the dashboard build of ui/ follows):
 //  * Every string from the API (finding texts, agents, rule ids, summary, last_error,
 //    quota and upstream messages) was written by a model or taken from an alert log: it
 //    is attacker-influenced. It is only ever put into the page with textContent or

@@ -1,4 +1,4 @@
-// Login page of the interim dashboard. Talks JSON to /api/session and /api/login.
+// Login page of the test fixture UI. Talks JSON to /api/session and /api/login.
 'use strict';
 
 const form = document.getElementById('login-form');

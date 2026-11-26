@@ -119,10 +119,47 @@ All answers are JSON (`Content-Type: application/json`, `nosniff`). Errors are
   `POST /api/login` (JSON); on a 401 go to `/login`. The login page may be a view of
   the SPA, but then the files it needs must be listed in `PUBLIC_FILES`.
 * `GET /logout` is only a confirmation page; the logout itself is the POST.
-* The interim UI in `wazuh_ai_analyzer/web/ui/` (a port of `static/index.html` without
-  inline code) is replaced by the kern build; `UI_DIR` in `service.py` points at it.
+* The dashboard is the kern build of `ui/` (see "The dashboard build" below); `UI_DIR` in
+  `service.py` points at its output, `wazuh_ai_analyzer/web/ui/`.
   An unknown path without a file extension serves `index.html` (SPA routes); an unknown
   file with an extension is 404; only the file types of `web/static_files.py` are served.
+
+## The dashboard build
+
+`ui/` is a plain Vite SPA (Svelte 5, TypeScript strict; not SvelteKit, because kern's strict-CSP
+test covers only the Vite path) on kern, theme `code` (dark by default, `code-light` through
+kern's `ThemeToggle`, the choice is kept in `localStorage` under `wai-theme`). Texts are German.
+Inter and JetBrains Mono come from pinned `@fontsource-variable` packages and are served from this
+origin (Latin subset); Silkscreen is not shipped, the display face falls back to JetBrains Mono.
+
+* **Build:** `cd ui && npm ci && npm run build` writes `wazuh_ai_analyzer/web/ui/`. The output is
+  generated, git-ignored and shipped in the release tarball (P7); a checkout that was never built
+  logs a warning at start-up and answers pages with 404. The build is reproducible (hashed asset names
+  and the CSP hash are identical on a second build; the `ui` CI job checks it).
+* **kern** is a release tarball in `ui/package.json`; `package-lock.json` holds its sha512
+  integrity, `npm ci` fails on any other content. Update it with the install command of kern's
+  consumer guide (a new URL, a new integrity value, nothing else in the diff).
+* **Pages:** `index.html` (the dashboard, needs a session), `login.html` and `logout.html`
+  (public). Each has exactly one inline script: kern's before-paint theme script.
+* **`ui-manifest.json`** is written by the build next to the pages. The build re-reads the pages,
+  fails on any other inline script, `<style>`, `style=`, `on*=` or non-local reference, hashes the
+  theme script as it stands in the page, and lists the files the login and logout pages load.
+  `load_ui_manifest()` (`web/ui_manifest.py`) validates it at start-up (plain relative names of
+  existing files of an allowed type, a well-formed hash; anything else refuses the start) and
+  `service.py` passes the hash to `build_csp(script_hashes=...)` and the file list to
+  `create_app(public_files=...)`, which serves exactly those files (plus `PUBLIC_FILES`) without a
+  session. A directory without a manifest adds neither.
+* **Rules from this page that the build and the tests enforce:** no `{@html}` (lint rule), no
+  `innerHTML` and friends (lint), model and log text only as text nodes, recommendations and
+  summaries labelled "KI-generiert, nicht verifiziert", no foreign origin and no CSP violation
+  (the Playwright test fails on any `securitypolicyviolation`, console error or foreign request).
+* **Tests:** `npm test` (Vitest: parsing, API client, dashboard state, build helpers),
+  `npm run e2e` (Playwright against `ui/e2e/server.py`: the real `create_app`, waitress and
+  headers on a fixture database with hostile texts; login, filter, paging, detail, logout, banners,
+  keyboard, 360 px, axe), `npm run screenshots` (the PR screenshot set).
+* **Detail view:** the finding detail is a kern `Drawer` (native `<dialog>`: focus is trapped, Escape
+  closes, focus returns to the row). It shows the list data at once and adds the batch summary and
+  alert count from `GET /api/findings/<id>`.
 
 ## Static files
 

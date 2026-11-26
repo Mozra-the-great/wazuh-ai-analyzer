@@ -34,12 +34,14 @@ wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_
                      workers); metrics/runtime.py (the `runtime` block of /api/stats);
                      service.py (startup order, supervision, clean stop); instance_lock.py
                      (flock on data_dir/.lock, one service per data dir); web/ (waitress + Flask:
-                     auth, server-side sessions, CSRF, CSP, JSON API, static files, interim UI in
-                     web/ui/, see docs/web.md). `python -m wazuh_ai_analyzer check-config|migrate|run`
+                     auth, server-side sessions, CSRF, CSP, JSON API, static files; web/ui/ holds the
+                     generated dashboard build, git-ignored, see docs/web.md). `python -m wazuh_ai_analyzer check-config|migrate|run`
 docs/configuration.md  every environment variable, defaults, valid ranges
 docs/web.md          web layer: auth, sessions, CSRF, headers, API, rules for the UI (P5)
 pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard
+ui/                  the rewrite's dashboard: Vite + Svelte 5 + kern (source, lockfile, Vitest, Playwright e2e
+                     with ui/e2e/server.py); `npm run build` writes wazuh_ai_analyzer/web/ui/ (git-ignored)
 install.sh           installer; verifies downloads against checksums.sha256
 scripts/release.sh   release helper: regenerates checksums.sha256, sets WAZUH_AI_REF
 checksums.sha256     sha256 of analyzer.py, static/index.html, requirements.txt
@@ -51,8 +53,8 @@ tests/               legacy tests, one module per topic; conftest.py isolates al
 tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface, exporter SQL),
                      rollback/ (legacy analyzer on a migrated DB), differential/ (legacy and
                      new code on the same input must give the same batches)
-.github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), dependency-audit,
-                     workflow-lint, secret-scan, claude (@claude), claude-code-review
+.github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), ui (dashboard build +
+                     Playwright under the real CSP), dependency-audit, workflow-lint, secret-scan, claude (@claude), claude-code-review
 ```
 
 ## Commands
@@ -62,6 +64,8 @@ python -m pytest -q                      # tests (no network, no real Gemini key
 python -m pytest -q --ignore=tests/v2    # legacy tests only (what the 3.10 job runs)
 pip install --require-hashes -r requirements-lint.txt && ruff check . && mypy
 pip-audit --require-hashes --disable-pip -r requirements.txt
+(cd ui && npm ci && npm run lint && npm run check && npm test && npm run build)   # dashboard
+(cd ui && E2E_PYTHON=python npm run e2e)  # needs the build, the backend requirements, `npx playwright install chromium`
 shellcheck install.sh scripts/release.sh
 sha256sum --check --strict checksums.sha256
 ```
