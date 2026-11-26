@@ -230,7 +230,9 @@ class Pipeline:
                         "service is stopping" if wait <= 0 else "upstream gate closed",
                     )
                     return
-                context = BatchContext(batch_id=batch_id, source=source, is_retry=is_retry)
+                context = BatchContext(
+                    batch_id=batch_id, source=source, is_retry=is_retry, partial=self._repo
+                )
                 try:
                     result = self._backend.analyse(groups, context)
                 except BackendFailure as exc:
@@ -244,6 +246,8 @@ class Pipeline:
                 return
             if result.suspicious_downgrades:
                 self.counters.inc("suspicious_downgrades", result.suspicious_downgrades)
+            if result.safety_blocked:
+                self.counters.inc("safety_blocked", result.safety_blocked)
             log.info(
                 "[%s] Batch %d: risk=%s | %d findings",
                 "retry" if is_retry else source,

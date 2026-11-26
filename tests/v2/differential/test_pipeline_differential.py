@@ -239,6 +239,10 @@ def _clocked_datetime(clock: FakeClock) -> type[datetime]:
     return ClockedDatetime
 
 
+# Counters the legacy code does not have; they stay 0 in these scenarios (llm mode).
+COUNTERS_NEW_IN_THE_REWRITE = frozenset({"safety_blocked"})
+
+
 class Legacy:
     def __init__(self, az: Any, monkeypatch: pytest.MonkeyPatch, start: float) -> None:
         self.az = az
@@ -286,7 +290,11 @@ class Legacy:
         return str(self.az.DB_PATH)
 
     def counters(self) -> dict[str, int]:
-        return {key: self.az._stats[key] for key in PipelineStats().as_dict()}
+        return {
+            key: self.az._stats[key]
+            for key in PipelineStats().as_dict()
+            if key not in COUNTERS_NEW_IN_THE_REWRITE
+        }
 
     def status(self) -> tuple[dict[str, object], dict[str, object]]:
         return self.az.quota.as_dict(), self.az.upstream.as_dict()
@@ -325,7 +333,7 @@ class New:
         return str(self.env.database.path)
 
     def counters(self) -> dict[str, int]:
-        return self.env.stats()
+        return {k: v for k, v in self.env.stats().items() if k not in COUNTERS_NEW_IN_THE_REWRITE}
 
     def status(self) -> tuple[dict[str, object], dict[str, object]]:
         return self.env.pipeline.quota.as_dict(), self.env.pipeline.upstream.as_dict()

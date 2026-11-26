@@ -127,7 +127,7 @@ def test_exporter_sql_is_unchanged_by_the_migration(tmp_path: Path, clock: FakeC
     before = collect(str(legacy), after_id=0)
     assert rows > 0
 
-    assert migrate(db).applied == (2,)
+    assert migrate(db).applied == (2, 3)
     after = collect(str(legacy), after_id=0)
     assert after == before
 

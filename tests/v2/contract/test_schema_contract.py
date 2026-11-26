@@ -40,6 +40,8 @@ BATCHES_COLUMNS = [
     # added by the rewrite
     ("mode", "TEXT", 1, "'llm'", 0),
     ("decision_version", "TEXT", 0, None, 0),
+    # scratch space of the decision backend (#88); not part of the read interface
+    ("decision_partial", "TEXT", 0, None, 0),
 ]
 FINDINGS_COLUMNS = [
     ("id", "INTEGER", 0, None, 1),
@@ -88,10 +90,11 @@ def test_the_migration_only_adds_columns_to_a_legacy_database(az: Any, tmp_path:
     legacy = Database(az.DB_PATH)  # built by the legacy init_db()
     before = {table: columns(legacy, table) for table in ("batches", "findings")}
     migrate(legacy)
+    added = {"batches": 3, "findings": 2}
     for table in before:
         after = columns(legacy, table)
         assert after[: len(before[table])] == before[table]
-        assert len(after) == len(before[table]) + 2
+        assert len(after) == len(before[table]) + added[table]
     fresh = Database(tmp_path / "fresh" / "analyses.db")
     (tmp_path / "fresh").mkdir()
     migrate(fresh)

@@ -225,7 +225,8 @@ class Repository:
         with self._db.transaction() as conn:
             updated = conn.execute(
                 "UPDATE batches SET summary=?, overall_risk=?, status='done', mode=?,"
-                " decision_version=?, next_attempt=NULL, last_error=NULL WHERE id=?",
+                " decision_version=?, next_attempt=NULL, last_error=NULL, decision_partial=NULL"
+                " WHERE id=?",
                 (summary, overall_risk, mode, decision_version, batch_id),
             ).rowcount
             if updated != 1:
@@ -251,6 +252,20 @@ class Repository:
                     raise RuntimeError("INSERT did not return a row id")
                 ids.append(cur.lastrowid)
         return ids
+
+    # ── decision scratch space (#88) ─────────────────────────────────────────
+    def load_decision_partial(self, batch_id: int) -> str | None:
+        """The answers a decision-mode batch already has (a JSON document), if any."""
+        with self._db.reader() as conn:
+            row = conn.execute(
+                "SELECT decision_partial FROM batches WHERE id=?", (batch_id,)
+            ).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def save_decision_partial(self, batch_id: int, document: str) -> None:
+        """Keep the answers so far; `complete_batch` clears them."""
+        with self._db.transaction() as conn:
+            conn.execute("UPDATE batches SET decision_partial=? WHERE id=?", (document, batch_id))
 
     def set_pending(
         self,
@@ -279,7 +294,7 @@ class Repository:
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE batches SET status='error', next_attempt=NULL, last_error=?,"
-                " attempts=MAX(attempts, ?) WHERE id=?",
+                " attempts=MAX(attempts, ?), decision_partial=NULL WHERE id=?",
                 (reason, attempts, batch_id),
             )
 
@@ -348,8 +363,8 @@ class Repository:
             ids: list[int] = []
             for row in rows:
                 updated = conn.execute(
-                    "UPDATE batches SET status='error', next_attempt=NULL, last_error=?"
-                    " WHERE id=? AND status='pending'",
+                    "UPDATE batches SET status='error', next_attempt=NULL, last_error=?,"
+                    " decision_partial=NULL WHERE id=? AND status='pending'",
                     (reason, row["id"]),
                 ).rowcount
                 if updated == 1:
@@ -463,8 +478,7 @@ class Repository:
         with self._db.reader() as conn:
             conn.execute("BEGIN")
             rows = conn.execute(
-                f"SELECT {_FINDING_COLUMNS} {join} {where}"
-                " ORDER BY f.id DESC LIMIT ? OFFSET ?",
+                f"SELECT {_FINDING_COLUMNS} {join} {where} ORDER BY f.id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
             total = int(

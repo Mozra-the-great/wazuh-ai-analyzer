@@ -31,8 +31,8 @@ LEGACY_RUNTIME_KEYS: Final = (
     "suspicious_downgrades",
     "purged_batches",
 )
-# New in the rewrite: lines the legacy code dropped silently.
-NEW_RUNTIME_KEYS: Final = ("invalid_lines", "oversized_lines")
+# New in the rewrite: lines the legacy code dropped silently, and groups the provider blocked.
+NEW_RUNTIME_KEYS: Final = ("invalid_lines", "oversized_lines", "safety_blocked")
 
 
 def runtime_counters(ingest: IngestStats, pipeline: PipelineStats) -> dict[str, int | bool]:
