@@ -28,7 +28,7 @@ Read on 2026-11-26 from the official pages (Gemini Developer API only, not Verte
 | Free tier | 200 RPM, 50,000 TPM, 10,000 RPD (limits are per project, TPM counts input tokens, RPD resets at midnight Pacific). Tier 1: 1,500 / 1,000,000 / 50,000. |
 | Price | Free tier: no charge. Paid: $0.10 per 1M input tokens, output not billed. |
 | Safety blocks | HTTP 400 `{"error": {"code": "<reason>", "message": "..."}}`, `code` one of `safety`, `prohibited_content`, `blocklist`, `image_safety`, `content_blocked`, and no `answers`. |
-| Limit violations and key errors | HTTP 400 with a message that names the rule. No `code` value is documented. |
+| Limit violations and key errors | HTTP 400 with a message that names the rule. No `code` value is documented; a request without questions answered `code: "invalid_request"` (observed, see below). |
 
 ### Not documented (do not rely on it)
 
@@ -101,8 +101,49 @@ failure kind and the `last_error` text). The second sends a request without ques
 the API must refuse, to record the body of a 400. On a service host the systemd credential
 `gemini` is read as usual. The key is never printed and never taken from the command line.
 
-Open until the first real call (#82, P8): the 429 and 5xx bodies, p50/p95 latency, the
-calibration of the thresholds (#89).
+On a service host, run it as a transient unit with the environment of the instance (the
+package lives in the release directory, so `WorkingDirectory=` is needed, #106):
+
+```sh
+sudo systemd-run --quiet --pipe --wait --collect \
+  -p User=wazuh-ai-analyzer-shadow \
+  -p WorkingDirectory=/opt/wazuh-ai-analyzer/current-shadow \
+  -p Environment=PYTHONDONTWRITEBYTECODE=1 \
+  -p LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini-shadow \
+  -p EnvironmentFile=/etc/wazuh-ai-analyzer-shadow.env \
+  /opt/wazuh-ai-analyzer/current-shadow/venv/bin/python -m wazuh_ai_analyzer probe-decision
+```
+
+### Results of the first real calls (2026-11-26)
+
+Release `2.0.0-rc.1`, shadow instance on the homelab Wazuh manager (Debian 12,
+free tier of the same Gemini project that serves `llm` mode), model `gemini-decision-1`,
+the five questions of `decisions/v1.json` (`decision_version` `1-fbd930b4635b`).
+
+| Call | Result |
+| --- | --- |
+| `probe-decision`, 21 calls in a row | 21 × HTTP 200, `content-type: application/json`, no `Retry-After`. The first call was checked in full: all five answers present, the analyzer accepted them. |
+| Latency (client side, request to parsed answer, n = 21) | p50 411 ms, p95 702 ms, min 270 ms, max 1395 ms |
+| Usage of the probe group (1 group, 1 sample, 5 questions) | `total_input_tokens` 1130, `total_output_tokens` 0, one modality entry `text` |
+| `probe-decision --invalid` (no questions) | HTTP 400 in 112 ms, `content-type: application/json; charset=UTF-8`, body `{"error":{"message":"Request must contain at least one question.","code":"invalid_request"}}`; classified `permanent` |
+| Shadow service | first batch (4 alerts, history) analysed; the production `llm` service kept running on the same key |
+
+The answer of the probe group: `relevant` 0.17, `severity` `low` (confidence 0.60; medium
+0.32, high 0.04, info 0.03, critical 0.01), `needs_action_now` 0.13, `already_blocked` 0.04,
+`known_benign` 0.21, so no finding (below the `low` threshold 0.7). The response carries an
+extra field that the guide does not list: `usage.input_tokens_by_modality`. The analyzer
+accepted the answer with it.
+
+Volume from the production database (live batches 2026-11-19 to 2026-11-25): 97 to 167 batches
+a day (about 122 on average), 1.85 alert groups per batch on average (p95 4, max 6), so about
+230 Decision requests a day plus history batches. At the probe's 1130 input tokens per group
+that is roughly 0.26 M input tokens a day: far below the free tier (10,000 RPD, 50,000 TPM), and
+about $0.03 a day at the paid price. Groups with more samples cost more tokens, so this is a
+lower bound; the shadow run (#81) gives the real request count.
+
+Still open: no HTTP 429 and no 5xx was seen, so their bodies and a `Retry-After` remain
+unverified (provoking a 429 would mean exceeding 200 RPM on the shared project, which was
+not done). The calibration of the thresholds stays with #89.
 
 ## Safety blocks in `llm` mode (#97)
 
