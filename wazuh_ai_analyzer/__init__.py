@@ -4,4 +4,4 @@ The legacy single-file service (`analyzer.py`) stays the deployed code path unti
 the cutover. This package is built next to it; see the epic (#81) for the plan.
 """
 
-__version__ = "2.0.0.dev0"
+__version__ = "2.0.0rc1"

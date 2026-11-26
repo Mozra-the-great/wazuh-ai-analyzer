@@ -45,8 +45,9 @@ pyproject.toml       project metadata, pytest and mypy configuration (no build b
 static/index.html    dashboard
 ui/                  the rewrite's dashboard: Vite + Svelte 5 + kern (source, lockfile, Vitest, Playwright e2e
                      with ui/e2e/server.py); `npm run build` writes wazuh_ai_analyzer/web/ui/ (git-ignored)
-deploy/              release tarball files of the rewrite: hardened systemd unit (LoadCredential), unprivileged-LXC
-                     drop-in, settings example, install.sh (tarball installer: releases/<version> + current symlink)
+deploy/              release tarball files of the rewrite: hardened systemd unit (LoadCredential, /var/ossec hidden except the
+                     alert dir), unprivileged-LXC and no-ossec-mask drop-ins, settings example, install.sh (tarball
+                     installer: releases/<version> + current symlink, ACL access to the alerts, `--instance` for a shadow run)
 scripts/build_release.py  reproducible release tarball (stdlib only); docs/release.md = build, release and sandbox
                      notes, docs/install.md = install/upgrade notes (shipped in the tarball as INSTALL.md)
 install.sh           legacy installer; verifies downloads against checksums.sha256

@@ -6,8 +6,14 @@
 #   /etc/wazuh-ai-analyzer.env            settings (docs/configuration.md), no API key needed
 #   /etc/wazuh-ai-analyzer/gemini         the Gemini API key, read by systemd as root
 #
+# A second instance (a shadow run next to the production service) is rendered from this
+# file by `install.sh --instance NAME`: unit name, data directory, settings file,
+# credential and `current` symlink all get the suffix -NAME. The paths below are the
+# defaults of the single instance.
+#
 # Everything below the "Sandbox" comment is tuned for `systemd-analyze security`. An
-# unprivileged container may refuse some of it: use unprivileged-lxc.conf as a drop-in.
+# unprivileged container may refuse some of it: use unprivileged-lxc.conf as a drop-in; if
+# only the hiding of /var/ossec is refused, use no-ossec-mask.conf (see INSTALL.md).
 [Unit]
 Description=Wazuh AI Analyzer
 Documentation=https://github.com/Mozra-the-great/wazuh-ai-analyzer
@@ -38,13 +44,17 @@ CPUQuota=25%
 
 # Sandbox
 # - files: read-only system, private /tmp and no home; the data directory is the only
-#   writable path and the Wazuh alert directory is read-only.
+#   writable path. /var/ossec (rules, keys, the other logs, the manager's state) is
+#   replaced by an empty read-only tmpfs and only the alert directory is bound back in,
+#   read-only: the service reads alerts and nothing else of Wazuh. If your alert log lives
+#   elsewhere, bind that directory in a drop-in (BindReadOnlyPaths=).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/opt/wazuh-ai-analyzer/data
-ReadOnlyPaths=-/var/ossec/logs/alerts
+TemporaryFileSystem=/var/ossec:ro
+BindReadOnlyPaths=-/var/ossec/logs/alerts
 UMask=0077
 # - kernel and devices
 PrivateDevices=true

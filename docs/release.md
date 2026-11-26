@@ -54,13 +54,15 @@ experiments) and a missing dashboard build.
 ## Cut a release
 
 1. A PR sets `__version__` in `wazuh_ai_analyzer/__init__.py` and `version` in `pyproject.toml` to the
-   release (`2.0.0`, or `2.0.0-rc.1` for a pre-release); both must agree. Merge it.
-2. Tag the merge commit on `main`: `git tag v2.0.0 && git push origin v2.0.0`. The tag must equal
-   `__version__`, or the build stops.
+   release (`2.0.0`, or the PEP 440 pre-release `2.0.0rc1`); both must agree. Merge it.
+2. Tag the merge commit on `main`: `git tag v2.0.0 && git push origin v2.0.0`. The tag must be the
+   release form of `__version__`: for `2.0.0rc1` it is `v2.0.0-rc.1` (`build_release.py` turns
+   `2.0.0rc1` into `2.0.0-rc.1`, which names the tarball, `VERSION` and `releases/<version>`), or the
+   build stops.
 3. The `Release` workflow builds the tarball twice, installs it on the runner, runs the sandbox
    checks, and only then `release-publish` attests the build provenance
    (`actions/attest-build-provenance`) and creates the GitHub release with the tarball, `SHA256SUMS`
-   and the attestation bundle (`*.tar.gz.intoto.jsonl`). A tag with a `-` in it becomes a pre-release.
+   and the attestation bundle (`*.tar.gz.intoto.jsonl`). Any tag that is not a plain `vMAJOR.MINOR.PATCH` (`v2.0.0-rc.1`) becomes a pre-release.
    The job also checks that the tagged commit is on `main`.
 
 A pull request or a manual run (`workflow_dispatch`) runs the build and sandbox jobs and publishes
@@ -76,7 +78,8 @@ nothing. Consumers verify with `sha256sum --check --strict SHA256SUMS` and
 | --- | --- |
 | `LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini` | the key reaches the process as `$CREDENTIALS_DIRECTORY/gemini`, not through the environment, `ps` or `systemctl show` |
 | `NoNewPrivileges`, `CapabilityBoundingSet=`, `AmbientCapabilities=` | no privilege gain, no capability at all (checked in CI: `CapEff` and `CapBnd` are zero) |
-| `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=<prefix>/data`, `ReadOnlyPaths=-/var/ossec/logs/alerts`, `UMask=0077` | the data directory is the only writable path; the alert log is read-only |
+| `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=<prefix>/data`, `UMask=0077` | the data directory is the only writable path |
+| `TemporaryFileSystem=/var/ossec:ro`, `BindReadOnlyPaths=-/var/ossec/logs/alerts` | `/var/ossec` (rules, agent keys, manager state, other logs) is an empty read-only tmpfs; only the alert directory is bound back in, read-only |
 | `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `ProtectProc=invisible`, `ProcSubset=pid` | no kernel, device or other-process access that a log analyser never needs |
 | `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` | dashboard and Gemini over IP, the journal and name resolution over a Unix socket |
 | `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `RemoveIPC`, `KeyringMode=private` | standard hardening; the Python service needs none of what they forbid |
@@ -109,7 +112,7 @@ could not chown the file and granted the service user read access through an ACL
 `read_secret_file` demanded an owner equal to the service user and no group bits, and refused this
 file. For files inside `$CREDENTIALS_DIRECTORY` the owner may now be root or the service user, the group
 bits are not judged, and access for others is still refused; `GEMINI_API_KEY_FILE` keeps the strict
-rule (`docs/configuration.md`, tests in `tests/v2/unit/test_secret.py`). The `release-systemd` job runs
+rule (`docs/configuration.md`, tests in `tests/v2/unit/test_secret.py`). `CREDENTIALS_DIRECTORY` comes from the environment, so the relaxation is tied to the directory: it is opened first and judged on the descriptor (owner the service user or root, no access for others), the file is opened relative to it, and a symlinked directory is refused. The `release-systemd` job runs
 `check-config --require-api-key` through `systemd-run -p LoadCredential=...` as the service user, so this
 path is exercised against the real systemd on every build.
 

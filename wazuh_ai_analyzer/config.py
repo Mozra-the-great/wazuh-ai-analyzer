@@ -38,6 +38,7 @@ from .storage.contract import ANALYSIS_MODES, SEVERITIES, AnalysisMode
 ENV_ANALYSIS_MODE: Final = "ANALYSIS_MODE"
 ENV_DECISION_MODEL: Final = "DECISION_MODEL"
 ENV_DECISION_THRESHOLDS: Final = "DECISION_THRESHOLDS"
+ENV_TRUSTED_PROXY_ADDRESSES: Final = "TRUSTED_PROXY_ADDRESSES"
 ENV_API_KEY_FILE: Final = "GEMINI_API_KEY_FILE"
 ENV_CREDENTIALS_DIRECTORY: Final = "CREDENTIALS_DIRECTORY"
 CREDENTIAL_NAME: Final = "gemini"
@@ -56,6 +57,8 @@ _KEY_RE = re.compile(r"^[\x21-\x7e]{1,512}$")  # printable ASCII, no whitespace
 _PASSWORD_HASH_RE = re.compile(r"^[A-Za-z0-9:_.+-]+\$[^$\s]+\$[^$\s]+$")
 _TRUE: Final = frozenset({"true", "1", "yes"})
 _FALSE: Final = frozenset({"false", "0", "no"})
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 MAX_PATH_LENGTH = 4096
 MAX_INFRA_CONTEXT_LENGTH = 2000
@@ -142,6 +145,8 @@ class WebConfig:
     session_lifetime: int
     login_max_attempts: int
     trusted_proxy_hops: int
+    # Peers whose X-Forwarded-* headers are believed; empty = every peer (loopback only).
+    trusted_proxy_addresses: tuple[IPNetwork, ...]
     session_cookie_secure: bool
 
 
@@ -304,6 +309,35 @@ def _read_host(reader: _Reader) -> str:
             reader.problems.append("LISTEN_HOST: expected an IP address or a host name")
             return "127.0.0.1"
     return host
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _read_proxy_addresses(reader: _Reader) -> tuple[IPNetwork, ...]:
+    raw = reader.raw(ENV_TRUSTED_PROXY_ADDRESSES)
+    if raw is None:
+        return ()
+    networks: list[IPNetwork] = []
+    for item in raw.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            reader.problems.append(
+                f"{ENV_TRUSTED_PROXY_ADDRESSES}: expected a comma-separated list of IP addresses"
+                " or networks (10.0.0.5, 192.168.0.0/24, ::1)"
+            )
+            return ()
+    return tuple(networks)
 
 
 def _read_user(reader: _Reader) -> str:
@@ -498,8 +532,20 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         session_lifetime=r.integer("SESSION_LIFETIME", 8 * 3600, minimum=60, maximum=30 * 86_400),
         login_max_attempts=r.integer("LOGIN_MAX_ATTEMPTS", 5, minimum=1, maximum=1000),
         trusted_proxy_hops=r.integer("TRUSTED_PROXY_HOPS", 0, minimum=0, maximum=10),
+        trusted_proxy_addresses=_read_proxy_addresses(r),
         session_cookie_secure=r.boolean("SESSION_COOKIE_SECURE", True),
     )
+    if (
+        web.trusted_proxy_hops > 0
+        and not web.trusted_proxy_addresses
+        and not _is_loopback_host(web.listen_host)
+    ):
+        # Without a peer check any client that reaches the port sends its own
+        # X-Forwarded-For and picks its address (login rate limit, logs).
+        r.problems.append(
+            "TRUSTED_PROXY_HOPS: above 0 needs LISTEN_HOST on loopback (the proxy on the same"
+            f" host) or {ENV_TRUSTED_PROXY_ADDRESSES} naming the proxy"
+        )
     analysis = _read_analysis(r)
 
     if r.problems:

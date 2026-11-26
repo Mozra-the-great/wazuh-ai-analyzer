@@ -45,7 +45,12 @@ on); with 0, waitress removes the `X-Forwarded-*` headers before the app can see
 are not tied to the password hash: after changing `DASHBOARD_PASSWORD_HASH`, restart
 and run `DELETE FROM web_sessions` (or wait for `SESSION_LIFETIME`).
 Set `TRUSTED_PROXY_HOPS` only when a reverse proxy really sits in front **and** the
-service port cannot be reached around it (otherwise a client sends its own header).
+service port cannot be reached around it (otherwise a client sends its own header). The
+configuration enforces this: with `TRUSTED_PROXY_HOPS` above 0 the service starts only when
+`LISTEN_HOST` is a loopback address (127.0.0.0/8, `::1`, `localhost`: the proxy runs on the same
+host) or `TRUSTED_PROXY_ADDRESSES` lists the proxy (IP addresses or networks, e.g.
+`192.168.0.5,10.0.0.0/24`). With that list the headers are believed only from those peers; a
+request from any other address loses its `X-Forwarded-*` headers and counts under its socket address.
 
 ## CSRF
 
