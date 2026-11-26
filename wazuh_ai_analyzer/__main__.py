@@ -7,6 +7,8 @@
 * `run` starts the service: ingest and analysis pipeline until SIGTERM/SIGINT. The
   web server joins with #86; until the cutover the deployed service is still
   `analyzer.py`.
+* `probe-decision` makes one real call to the Decisions API with a made-up alert group
+  and prints the response (see `analysis/probe.py`). For the operator, never for CI.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from types import FrameType
 from typing import TextIO
 
 from . import __version__
+from .analysis.decision import GeminiDecisionBackend
+from .analysis.probe import probe
 from .config import Config, ConfigError, load_config
 from .instance_lock import InstanceLockError
 from .logging_setup import configure_logging
@@ -52,6 +56,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     commands.add_parser("migrate", help="create or migrate the database")
     commands.add_parser("run", help="run the service until SIGTERM or SIGINT")
+    probe_parser = commands.add_parser(
+        "probe-decision",
+        help="one real call to the Decisions API with a made-up alert group (needs the API key)",
+    )
+    probe_parser.add_argument(
+        "--invalid",
+        action="store_true",
+        help="send a request the API must refuse, to record the body of an HTTP 400",
+    )
     return parser
 
 
@@ -89,6 +102,12 @@ def _migrate(config: Config, out: TextIO) -> int:
     else:
         print(f"database already at version {result.to_version}", file=out)
     return EXIT_OK
+
+
+def _probe_decision(config: Config, invalid: bool, out: TextIO) -> int:
+    config.require_api_key()
+    backend = GeminiDecisionBackend.from_config(config)
+    return EXIT_OK if probe(backend, out, invalid=invalid) == 0 else EXIT_FAILURE
 
 
 def _install_stop_signals(stop: threading.Event) -> None:
@@ -134,6 +153,8 @@ def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None) -> int
             return _check_config(config, args.require_api_key, stream)
         if args.command == "run":
             return _run(config)
+        if args.command == "probe-decision":
+            return _probe_decision(config, args.invalid, stream)
         return _migrate(config, stream)
     except ConfigError as exc:
         print(exc, file=sys.stderr)

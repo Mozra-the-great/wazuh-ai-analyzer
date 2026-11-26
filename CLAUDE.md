@@ -30,13 +30,16 @@ wazuh_ai_analyzer/   the rewrite: config.py, secret.py, permissions.py, logging_
                      contract = frozen read interface); ingest/ (live tail, backlog,
                      watermark.json shared with analyzer.py, sanitize = the only gate for alert
                      fields); analysis/ (AnalysisBackend protocol, prompt + answer validation,
-                     llm = Gemini over plain REST); pipeline/ (retry queue, quota/upstream gates,
+                     llm = Gemini over plain REST, decision = Gemini Decision 1 with the
+                     versioned definitions in decisions/v1.json, text_templates, probe);
+                     pipeline/ (retry queue, quota/upstream gates,
                      workers); metrics/runtime.py (the `runtime` block of /api/stats);
                      service.py (startup order, supervision, clean stop); instance_lock.py
                      (flock on data_dir/.lock, one service per data dir); web/ (waitress + Flask:
                      auth, server-side sessions, CSRF, CSP, JSON API, static files, interim UI in
                      web/ui/, see docs/web.md). `python -m wazuh_ai_analyzer check-config|migrate|run`
 docs/configuration.md  every environment variable, defaults, valid ranges
+docs/decision-api.md   Gemini Decision 1: verified API facts, mapping to findings, probe command
 docs/web.md          web layer: auth, sessions, CSRF, headers, API, rules for the UI (P5)
 pyproject.toml       project metadata, pytest and mypy configuration (no build backend)
 static/index.html    dashboard

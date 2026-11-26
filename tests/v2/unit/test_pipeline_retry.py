@@ -194,6 +194,22 @@ def test_unparseable_answer_is_retried_a_few_times_only(env: PipelineEnv) -> Non
     assert env.stats()["dropped_bad_response"] == 1
 
 
+def test_a_blocked_batch_is_dropped_with_the_reason_in_last_error(env: PipelineEnv) -> None:
+    env.install(FakeResponse(200, {"promptFeedback": {"blockReason": "SAFETY"}}))
+    batch_id = env.new_batch()
+    limit = env.config.retry.bad_response_max
+    for _ in range(limit):
+        env.make_due(batch_id)
+        env.run(batch_id)
+    r = env.row(batch_id)
+    assert r["status"] == "error"
+    assert r["last_error"] == (
+        f"bad_response nach {limit} Versuchen: Gemini blockiert die Anfrage (blockReason=SAFETY)"
+    )
+    assert contract.classify_error(r["last_error"]) == contract.ERROR_REASON_DROPPED
+    assert env.stats()["dropped_bad_response"] == 1
+
+
 def test_transient_failures_expire_after_max_age(env: PipelineEnv) -> None:
     env.install(FakeResponse(503, text="x"))
     batch_id = env.new_batch()
@@ -587,10 +603,12 @@ def test_any_backend_plugs_in_and_gets_the_batch_context(env: PipelineEnv) -> No
     env.run(batch_id)
     env.make_due(batch_id)
     assert env.pipeline.retry_once()
-    assert [c for _, c in backend.seen] == [
-        BatchContext(batch_id=batch_id, source="history", is_retry=False),
-        BatchContext(batch_id=batch_id, source="history", is_retry=True),
+    assert [(c.batch_id, c.source, c.is_retry) for _, c in backend.seen] == [
+        (batch_id, "history", False),
+        (batch_id, "history", True),
     ]
+    # The pipeline hands the repository over as the scratch space of per-group backends.
+    assert all(c.partial is env.repo for _, c in backend.seen)
     assert backend.seen[0][0][0]["rule_id"] == "5710"
     assert env.row(batch_id)["status"] == "done"
 

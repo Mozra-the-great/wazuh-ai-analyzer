@@ -64,7 +64,7 @@ def test_legacy_code_runs_on_a_database_migrated_in_place(az: Any, client: Any) 
 
     # 2. the rewrite migrates the same file
     db = Database(az.DB_PATH)
-    assert migrate(db).applied == (1, 2)
+    assert migrate(db).applied == (1, 2, 3)
 
     # 3. the legacy code starts again: init_db and every API endpoint
     az.init_db()

@@ -13,8 +13,9 @@ python -m wazuh_ai_analyzer run               # ingest + analysis until SIGTERM/
 
 `run` migrates the database first, so `migrate` is optional before it. Until the web layer
 (#86) lands, `run` serves no dashboard; the deployed service is still `analyzer.py`.
-`ANALYSIS_MODE=decision` is accepted by `check-config` but `run` refuses it (exit code 78)
-until the decision backend (#88) exists.
+`ANALYSIS_MODE=decision` runs the Gemini Decision 1 backend (#88); see
+[decision-api.md](decision-api.md). `python -m wazuh_ai_analyzer probe-decision` makes one
+real call with a made-up alert group (needs the API key, never part of CI).
 
 Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid configuration.
 
@@ -106,6 +107,12 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 Comma-separated `<severity>=<value>` pairs. A value is a number above 0 up to 1, or
 `never` (no finding of that severity). Severities that are not listed keep their default.
 Example: `high=0.45,info=0.9`.
+
+The value is the minimum probability of the `relevant` question for a group that the model
+rates with that severity. The API clamps a yes/no probability to 0.01 to 0.99, so a value
+of `1` behaves like `never`. In `decision` mode the key is read from the same places as in
+`llm` mode, and `DECISION_MODEL` replaces `GEMINI_MODEL` (`GEMINI_TEMPERATURE` is not used).
+`GEMINI_CONCURRENCY` bounds the batches in flight; a batch sends one request per alert group.
 
 ## Database
 

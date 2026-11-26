@@ -65,6 +65,20 @@ class AnalysisResult:
     # Findings that rate a rule of a high Wazuh level as info/low (#38). Counted by
     # the pipeline, never changed.
     suspicious_downgrades: int = 0
+    # Groups the provider refused to look at (safety block), stored as placeholder findings.
+    safety_blocked: int = 0
+
+
+class PartialStore(Protocol):
+    """Where a backend that answers per group keeps the answers of a batch it has so far.
+
+    The document is opaque to storage. `Repository` implements this, and clears it when
+    the batch is completed.
+    """
+
+    def load_decision_partial(self, batch_id: int) -> str | None: ...
+
+    def save_decision_partial(self, batch_id: int, document: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,12 +86,15 @@ class BatchContext:
     """Which batch an analysis belongs to.
 
     The LLM backend does not need it. A backend that answers per group (decision
-    mode) uses `batch_id` to keep the answers it already has across retries.
+    mode) uses `batch_id` and `partial` to keep the answers it already has across
+    retries: the batch is the retry unit, but a group that was answered is not paid
+    for twice.
     """
 
     batch_id: int
     source: Source
     is_retry: bool
+    partial: PartialStore | None = None
 
 
 class AnalysisBackend(Protocol):

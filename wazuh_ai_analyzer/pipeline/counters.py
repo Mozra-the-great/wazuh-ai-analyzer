@@ -21,6 +21,7 @@ CounterName = Literal[
     "expired",
     "suspicious_downgrades",
     "purged_batches",
+    "safety_blocked",
 ]
 DropCounter = Literal["dropped_permanent", "dropped_bad_response", "expired"]
 
@@ -38,6 +39,9 @@ class PipelineStats:
     suspicious_downgrades: int = 0
     # Batches deleted by the retention cleanup (RETENTION_DAYS).
     purged_batches: int = 0
+    # Alert groups the provider blocked (safety filter); each is stored as a placeholder
+    # finding, never dropped silently (#97).
+    safety_blocked: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return asdict(self)

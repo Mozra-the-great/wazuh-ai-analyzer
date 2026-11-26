@@ -18,6 +18,8 @@ Versions:
   predate the retry columns of #43, and for a database that does not exist yet).
 * 2 - rewrite additions: `batches.mode`, `batches.decision_version`,
   `findings.confidence`, `findings.decision`, table `web_sessions`.
+* 3 - `batches.decision_partial` (#88): the answers a decision-mode batch already has,
+  so a retry does not pay for them twice. Scratch data, not part of the read interface.
 """
 
 from __future__ import annotations
@@ -116,6 +118,12 @@ _V2_STATEMENTS: tuple[str, ...] = (
 )
 
 
+# Version 3: scratch space of the decision backend. It holds a JSON document of validated
+# probabilities per alert group while a batch is retried, and is cleared when the batch
+# is done. It is never returned by the web API.
+_V3_COLUMNS: tuple[tuple[str, str, str], ...] = (("batches", "decision_partial", "TEXT"),)
+
+
 class MigrationError(Exception):
     """The database cannot be migrated safely."""
 
@@ -168,6 +176,11 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    for column in _add_missing_columns(conn, _V3_COLUMNS):
+        log.info("Database migrated: added %s", column)
+
+
 @dataclass(frozen=True, slots=True)
 class Migration:
     version: int
@@ -178,6 +191,7 @@ class Migration:
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "adopt legacy schema", _migrate_v1),
     Migration(2, "mode, decision columns and web sessions", _migrate_v2),
+    Migration(3, "decision partial answers", _migrate_v3),
 )
 LATEST_VERSION = MIGRATIONS[-1].version
 
