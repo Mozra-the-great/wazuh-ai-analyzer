@@ -1,0 +1,3 @@
+# The release build script is stdlib-only tooling of the rewrite: same rule set as the
+# package, minus the subprocess rules it needs on purpose (git with a fixed argument vector).
+extend = "../wazuh_ai_analyzer/ruff.toml"

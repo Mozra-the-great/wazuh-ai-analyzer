@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -349,6 +350,30 @@ def test_key_from_systemd_credential(tmp_path: Path) -> None:
     (creds / "gemini").chmod(0o400)
     config = load_config({"CREDENTIALS_DIRECTORY": str(creds)})
     assert config.require_api_key().reveal() == "cred-key"
+
+
+@posix_only
+def test_root_owned_systemd_credential_with_acl_mask_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What systemd leaves behind when it cannot chown the credential (ACL fallback).
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    (creds / "gemini").write_text("cred-key\n", encoding="utf-8")
+    (creds / "gemini").chmod(0o400)
+    real_fstat = os.fstat
+
+    def fake(fd: int) -> os.stat_result:
+        fields = list(real_fstat(fd))
+        fields[stat.ST_UID] = 0
+        fields[stat.ST_MODE] = stat.S_IFREG | 0o440
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(os, "fstat", fake)
+    assert load_config({"CREDENTIALS_DIRECTORY": str(creds)}).require_api_key().reveal() == (
+        "cred-key"
+    )
 
 
 def test_credentials_directory_without_gemini_credential_means_no_key(tmp_path: Path) -> None:

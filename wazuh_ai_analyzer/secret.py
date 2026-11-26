@@ -66,7 +66,7 @@ class SecretFileError(Exception):
     """A secret file is missing, unreadable, too permissive or has a wrong owner."""
 
 
-def read_secret_file(path: str) -> str:
+def read_secret_file(path: str, *, systemd_credential: bool = False) -> str:
     """Read a secret from a file the service user owns exclusively (0600 / 0400).
 
     Refuses (raises `SecretFileError`) a missing file, a symlink, anything that is
@@ -75,6 +75,15 @@ def read_secret_file(path: str) -> str:
     so the file cannot be swapped between the check and the read. On platforms
     without POSIX owners and modes only the type and size checks apply. Messages
     never contain file contents.
+
+    `systemd_credential=True` is for a file inside `$CREDENTIALS_DIRECTORY`
+    (`LoadCredential=`). systemd normally chowns such a file to the service user
+    with mode 0400. Where it cannot (no tmpfs/ramfs for the credentials directory,
+    for example in a container), it leaves the file owned by root and grants the
+    service user read access through a POSIX ACL, and the group bits of the mode
+    then show the ACL mask (0440). The directory itself is private to the service
+    user, so for these files the owner may also be root and the group bits are not
+    judged; access for others is still refused.
     """
     flags = (
         os.O_RDONLY
@@ -96,13 +105,7 @@ def read_secret_file(path: str) -> str:
         if not stat.S_ISREG(info.st_mode):
             raise SecretFileError(f"{path}: not a regular file")
         if hasattr(os, "geteuid"):
-            if info.st_uid != os.geteuid():
-                raise SecretFileError(f"{path}: must be owned by the service user")
-            if info.st_mode & 0o077:
-                raise SecretFileError(
-                    f"{path}: mode {stat.S_IMODE(info.st_mode):04o} is too permissive,"
-                    " use 0600 or 0400"
-                )
+            _check_owner_and_mode(path, info, systemd_credential)
         if info.st_size > SECRET_FILE_MAX_BYTES:
             raise SecretFileError(f"{path}: larger than {SECRET_FILE_MAX_BYTES} bytes")
         data = os.read(fd, SECRET_FILE_MAX_BYTES + 1)
@@ -112,3 +115,18 @@ def read_secret_file(path: str) -> str:
         return data.decode("utf-8").strip()
     except UnicodeDecodeError:
         raise SecretFileError(f"{path}: not valid UTF-8 text") from None
+
+
+def _check_owner_and_mode(path: str, info: os.stat_result, systemd_credential: bool) -> None:
+    owners = {os.geteuid()}
+    forbidden = 0o077
+    if systemd_credential:
+        owners.add(0)
+        forbidden = 0o007
+    if info.st_uid not in owners:
+        raise SecretFileError(f"{path}: must be owned by the service user")
+    if info.st_mode & forbidden:
+        advice = "others must have no access" if systemd_credential else "use 0600 or 0400"
+        raise SecretFileError(
+            f"{path}: mode {stat.S_IMODE(info.st_mode):04o} is too permissive, {advice}"
+        )

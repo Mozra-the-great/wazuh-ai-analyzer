@@ -1,0 +1,78 @@
+# Wazuh AI Analyzer - systemd unit (reference for every deployment).
+#
+# Layout (see INSTALL.md):
+#   /opt/wazuh-ai-analyzer/current        symlink to releases/<version> (code + venv)
+#   /opt/wazuh-ai-analyzer/data           database, watermark, session key (service user only)
+#   /etc/wazuh-ai-analyzer.env            settings (docs/configuration.md), no API key needed
+#   /etc/wazuh-ai-analyzer/gemini         the Gemini API key, read by systemd as root
+#
+# Everything below the "Sandbox" comment is tuned for `systemd-analyze security`. An
+# unprivileged container may refuse some of it: use unprivileged-lxc.conf as a drop-in.
+[Unit]
+Description=Wazuh AI Analyzer
+Documentation=https://github.com/Mozra-the-great/wazuh-ai-analyzer
+After=network.target wazuh-manager.service
+Wants=wazuh-manager.service
+
+[Service]
+Type=simple
+User=wazuh-ai-analyzer
+Group=wazuh-ai-analyzer
+WorkingDirectory=/opt/wazuh-ai-analyzer/current
+EnvironmentFile=/etc/wazuh-ai-analyzer.env
+# The release directory is read-only for the service: no bytecode cache writes.
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+# The key is handed over as $CREDENTIALS_DIRECTORY/gemini. A GEMINI_API_KEY or
+# GEMINI_API_KEY_FILE in the environment file still wins (docs/configuration.md).
+LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini
+ExecStart=/opt/wazuh-ai-analyzer/current/venv/bin/python -m wazuh_ai_analyzer run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+SyslogIdentifier=wazuh-ai-analyzer
+
+# Resources (small LXC, as before)
+MemoryMax=256M
+CPUQuota=25%
+
+# Sandbox
+# - files: read-only system, private /tmp and no home; the data directory is the only
+#   writable path and the Wazuh alert directory is read-only.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/wazuh-ai-analyzer/data
+ReadOnlyPaths=-/var/ossec/logs/alerts
+UMask=0077
+# - kernel and devices
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+# - privileges and process
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+KeyringMode=private
+# - network and system calls: IPv4/IPv6 for the dashboard and the Gemini API, AF_UNIX for
+#   the journal and name resolution.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

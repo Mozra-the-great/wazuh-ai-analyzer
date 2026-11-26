@@ -19,7 +19,7 @@ pythonpath = ["."]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["wazuh_ai_analyzer", "tests/v2"]
+files = ["wazuh_ai_analyzer", "tests/v2", "scripts/build_release.py"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
