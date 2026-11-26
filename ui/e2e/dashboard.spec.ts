@@ -282,6 +282,91 @@ test.describe('the dashboard', () => {
   });
 });
 
+test.describe('the ruled sheets are closed on all four sides (#112)', () => {
+  // kern's TileGrid draws the top line and each Tile its right and bottom line, so the left line
+  // is the app's. The test pins the rendered geometry, not the CSS text: width and colour of every
+  // edge, the line is not covered by a tile or clipped by an ancestor, and a pixel strip on the line
+  // differs from the page background next to it (so no tile paints over it).
+  const SIZES = {
+    desktop: { width: 1280, height: 900 },
+    mobile: { width: 360, height: 780 },
+  } as const;
+
+  for (const [size, viewport] of Object.entries(SIZES)) {
+    for (const theme of ['code', 'code-light']) {
+      test(`severity tiles: ${size}, ${theme}`, async ({ browser }) => {
+        const context = await browser.newContext({ viewport, locale: 'de-DE', timezoneId: 'Europe/Berlin' });
+        await context.addInitScript((id) => {
+          localStorage.setItem('wai-theme', id);
+        }, theme);
+        const page = await context.newPage();
+        await login(page);
+        const grid = page.getByRole('list', { name: 'Findings nach Schweregrad' });
+        await expect(grid).toHaveCSS('border-top-width', '1px');
+
+        const geometry = await page.evaluate(() => {
+          const list = document.querySelector<HTMLElement>('ul.k-tile-grid');
+          const column = document.querySelector<HTMLElement>('section.list');
+          if (list === null || column === null) throw new Error('tile grid or list section not found');
+          const edges = (el: HTMLElement): Record<string, string> => {
+            const cs = getComputedStyle(el);
+            return {
+              top: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+              right: `${cs.borderRightWidth} ${cs.borderRightStyle} ${cs.borderRightColor}`,
+              bottom: `${cs.borderBottomWidth} ${cs.borderBottomStyle} ${cs.borderBottomColor}`,
+              left: `${cs.borderLeftWidth} ${cs.borderLeftStyle} ${cs.borderLeftColor}`,
+            };
+          };
+          const box = list.getBoundingClientRect();
+          const tiles = [...list.querySelectorAll<HTMLElement>('li.k-tile')];
+          const clipping: string[] = [];
+          for (let el = list.parentElement; el !== null; el = el.parentElement) {
+            const cs = getComputedStyle(el);
+            if (cs.overflowX !== 'visible') clipping.push(el.tagName);
+          }
+          return {
+            grid: edges(list),
+            tiles: tiles.map(edges),
+            left: box.left,
+            top: box.top,
+            height: box.height,
+            right: box.right,
+            columnLeft: column.getBoundingClientRect().left,
+            columnRight: column.getBoundingClientRect().right,
+            lastTileRight: Math.max(...tiles.map((t) => t.getBoundingClientRect().right)),
+            clipping,
+            viewportWidth: document.documentElement.clientWidth,
+          };
+        });
+
+        const line = geometry.grid.top; // the theme's line: 1px, solid, --k-line
+        expect(line).toMatch(/^1px solid rgb\(/);
+        expect(geometry.grid.left).toBe(line);
+        expect(geometry.tiles).toHaveLength(6);
+        for (const tile of geometry.tiles) {
+          expect(tile.right).toBe(line);
+          expect(tile.bottom).toBe(line);
+        }
+        // The left line sits at the same x as the findings list below and is inside the viewport.
+        expect(geometry.left).toBeGreaterThan(0);
+        expect(Math.abs(geometry.left - geometry.columnLeft)).toBeLessThan(0.5);
+        expect(Math.abs(geometry.right - geometry.columnRight)).toBeLessThan(0.5);
+        expect(Math.abs(geometry.lastTileRight - geometry.right)).toBeLessThan(1.5);
+        expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+        // Nothing clips it.
+        expect(geometry.clipping).toEqual([]);
+        // The pixels: the strip on the line is not the page background beside it.
+        const strip = (x: number): Promise<Buffer> =>
+          page.screenshot({ clip: { x, y: geometry.top + 8, width: 1, height: 8 } });
+        const onLine = await strip(geometry.left);
+        const beside = await strip(geometry.left - 4);
+        expect(onLine.equals(beside)).toBe(false);
+        await context.close();
+      });
+    }
+  }
+});
+
 test.describe('empty database', () => {
   test('is not an error: the empty state explains what happens next', async ({ page }) => {
     // Served by the same backend: an offset beyond the data (no filter) is the closest we
