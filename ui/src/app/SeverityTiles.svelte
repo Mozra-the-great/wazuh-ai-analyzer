@@ -12,7 +12,7 @@
   const count = (level: Severity): string => (stats === null ? '–' : nf.format(stats.bySeverity[level]));
 </script>
 
-<TileGrid as="ul" min="9rem" aria-label={T.tiles.label}>
+<TileGrid as="ul" min="9rem" class="sev-tiles" aria-label={T.tiles.label}>
   <Tile as="li">
     <div class="tile" data-level="all">
       <span class="num">{stats === null ? '–' : nf.format(stats.totalFindings)}</span>
@@ -30,6 +30,17 @@
 </TileGrid>
 
 <style>
+  /* kern's TileGrid draws the top line and every Tile its right and bottom line, so on its own the
+     sheet is open on the left (#112). The left edge closes it; the grid's own top line joins it at
+     the corner. kern#172 */
+  :global(.sev-tiles) {
+    border-left: var(--k-border-w) solid var(--k-line);
+  }
+  @media (forced-colors: active) {
+    :global(.sev-tiles) {
+      border-left-color: CanvasText;
+    }
+  }
   .tile {
     display: grid;
     gap: var(--k-space-1);
