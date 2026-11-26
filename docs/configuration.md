@@ -37,7 +37,7 @@ Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid co
 | `GEMINI_MODEL` | Default is now `gemini-3.1-flash-lite`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
 | `SESSION_COOKIE_SECURE` | Strict boolean, see above. With `true` the cookies are named `__Host-wai_*` and HSTS is sent. |
 | `STATIC_DIR` | Accepted, ignored with a warning (the UI is part of the package). |
-| `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. |
+| `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. A value above 0 is refused unless `LISTEN_HOST` is a loopback address (the proxy runs on the same host) or `TRUSTED_PROXY_ADDRESSES` names the proxy: otherwise any client that reaches the port could send its own `X-Forwarded-For`. |
 | session cookie | `SameSite=Strict` (was `Lax`), server-side sessions, name `wai_session` / `__Host-wai_session`. Existing sessions end at the cutover. |
 | login / logout | `POST /api/login` and `POST /api/logout` (JSON, CSRF token); `GET /logout` is a confirmation page. See `docs/web.md`. |
 | `/api/findings` | `limit` below 1 or non-numeric, a negative `offset` or an unknown `severity`/`source` is 400 (was: `limit=-1` returned all rows, non-numeric values were a 500). |
@@ -62,6 +62,9 @@ to the service user (mode `0400`). When it cannot, for example in a container wi
 tmpfs for the credentials, it leaves the file owned by root and grants the service user read
 access through an ACL, so the mode shows `0440`. Both are accepted there: the owner is the
 service user or root, the group bits are ignored, and access for others is still refused.
+The directory is verified instead of trusted (the variable comes from the environment): it is opened
+without following a symlink, its owner must be the service user or root and it must give others no
+access (`mode & 0007 == 0`), and the file is opened relative to it.
 `GEMINI_API_KEY_FILE` always keeps the strict rule above.
 
 Without any key the service still starts (as `analyzer.py` does) and the dashboard shows
@@ -104,7 +107,8 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 | `DASHBOARD_PASSWORD_HASH` | none (the dashboard answers 503) | Werkzeug hash `<method>$<salt>$<hash>` |
 | `SESSION_LIFETIME` | `28800` | 60 to 2592000 seconds |
 | `LOGIN_MAX_ATTEMPTS` | `5` | 1 to 1000 |
-| `TRUSTED_PROXY_HOPS` | `0` | 0 to 10 |
+| `TRUSTED_PROXY_HOPS` | `0` | 0 to 10; above 0 needs a loopback `LISTEN_HOST` or `TRUSTED_PROXY_ADDRESSES` (new rule) |
+| `TRUSTED_PROXY_ADDRESSES` | none | comma-separated IP addresses or networks of the reverse proxy (new) |
 | `SESSION_COOKIE_SECURE` | `true` | `true`, `1`, `yes`, `false`, `0`, `no` |
 | `ANALYSIS_MODE` | `llm` | `llm`, `decision` (new) |
 | `DECISION_MODEL` | `gemini-decision-1` | model name, as `GEMINI_MODEL` (new) |

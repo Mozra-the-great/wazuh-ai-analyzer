@@ -112,6 +112,7 @@ jobs:
           for needed in \
             VERSION BUILD-INFO.json INSTALL.md LICENSE THIRD-PARTY-NOTICES.md requirements.txt \
             deploy/install.sh deploy/wazuh-ai-analyzer.service deploy/unprivileged-lxc.conf \
+            deploy/no-ossec-mask.conf deploy/wazuh-ai-analyzer.env.example \
             wazuh_ai_analyzer/__main__.py wazuh_ai_analyzer/web/ui/ui-manifest.json \
             wazuh_ai_analyzer/web/ui/index.html; do
             grep -q -x -E "[^/]+/${needed}" "${RUNNER_TEMP}/files.txt" || { echo "missing: ${needed}"; exit 1; }
@@ -191,6 +192,27 @@ jobs:
           grep -q '^CapEff:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
           grep -q '^CapBnd:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
           grep -q '^NoNewPrivs:[[:space:]]*1$' "/proc/${pid}/status"
+          # /var/ossec is an empty read-only tmpfs with only the alert directory bound in
+          # (TemporaryFileSystem= + BindReadOnlyPaths=): look from inside the service's mount namespace
+          [ "$(sudo nsenter -t "${pid}" -m -- ls -A /var/ossec)" = "logs" ]
+          [ "$(sudo nsenter -t "${pid}" -m -- ls -A /var/ossec/logs)" = "alerts" ]
+          sudo nsenter -t "${pid}" -m -- test -r /var/ossec/logs/alerts/alerts.json
+          if sudo nsenter -t "${pid}" -m -- touch /var/ossec/logs/alerts/ci-write-test 2>/dev/null; then
+            echo "the alert directory must be read-only for the service"; exit 1
+          fi
+          if sudo nsenter -t "${pid}" -m -- touch /var/ossec/ci-write-test 2>/dev/null; then
+            echo "/var/ossec must be read-only for the service"; exit 1
+          fi
+          # the service user reads the alerts through an ACL, not through the group: prove it in the
+          # mount namespace of the unit, as the service user
+          sudo systemd-run --quiet --wait --pipe --collect -p User=wazuh-ai-analyzer \
+            -p TemporaryFileSystem=/var/ossec:ro -p BindReadOnlyPaths=/var/ossec/logs/alerts \
+            head -c 1 /var/ossec/logs/alerts/alerts.json >/dev/null
+          sudo getfacl -p /var/ossec/logs/alerts | grep -q '^user:wazuh-ai-analyzer:r-x$'
+          sudo getfacl -p /var/ossec/logs/alerts | grep -q '^default:user:wazuh-ai-analyzer:r-x$'
+          if id -nG wazuh-ai-analyzer | tr ' ' '\n' | grep -qx wazuh; then
+            echo "the service user must not be in the alert group when the ACL is used"; exit 1
+          fi
           journalctl -u wazuh-ai-analyzer --no-pager -n 30
 
       - name: The Gemini key arrives through LoadCredential
@@ -237,6 +259,75 @@ jobs:
             echo "reinstall of an installed version must fail"; exit 1
           fi
 
+      - name: A shadow instance runs next to the production instance
+        run: |
+          set -euo pipefail
+          # A watermark in the shape of a copy of the production one seeds the shadow instance.
+          printf '{"version": 2, "live": null, "backlog": [], "next_id": 1, "updated_at": "2026-01-01T00:00:00Z"}\n' \
+            > "${RUNNER_TEMP}/watermark-copy.json"
+          # The same release again: the instance reuses releases/<version>.
+          # --alerts-access group exercises the group path (the production instance used the ACL).
+          sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance shadow --port 8766 \
+            --gemini-key-file "${RUNNER_TEMP}/key" --alerts-access group \
+            --seed-watermark "${RUNNER_TEMP}/watermark-copy.json" --no-start
+          sudo sh -c 'printf "MIN_LEVEL=15\nSESSION_COOKIE_SECURE=false\n" >> /etc/wazuh-ai-analyzer-shadow.env'
+          sudo test "$(sudo stat -c '%U %a' /opt/wazuh-ai-analyzer/data-shadow/watermark.json)" = "wazuh-ai-analyzer-shadow 600"
+          sudo systemctl enable --now wazuh-ai-analyzer-shadow
+          sleep 8
+          systemctl is-active wazuh-ai-analyzer
+          systemctl is-active wazuh-ai-analyzer-shadow
+          # own port, own data directory (and so its own lock), own settings and credential
+          [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/login)" = "200" ]
+          [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8766/login)" = "200" ]
+          sudo grep -q '^PORT=8766$' /etc/wazuh-ai-analyzer-shadow.env
+          sudo grep -q '^ANALYSIS_MODE=decision$' /etc/wazuh-ai-analyzer-shadow.env
+          sudo grep -q 'data-shadow' /etc/wazuh-ai-analyzer-shadow.env
+          sudo test -f /opt/wazuh-ai-analyzer/data-shadow/analyses.db
+          sudo test -f /opt/wazuh-ai-analyzer/data-shadow/.lock
+          sudo test "$(sudo stat -c %a /etc/wazuh-ai-analyzer/gemini-shadow)" = "600"
+          systemctl cat wazuh-ai-analyzer-shadow | grep -q 'LoadCredential=gemini:/etc/wazuh-ai-analyzer/gemini-shadow'
+          systemctl cat wazuh-ai-analyzer-shadow | grep -q 'ReadWritePaths=/opt/wazuh-ai-analyzer/data-shadow'
+          [ "$(readlink /opt/wazuh-ai-analyzer/current-shadow)" = "$(readlink /opt/wazuh-ai-analyzer/current)" ]
+          # the instance has its own system user, which the group path added to the alert group
+          [ "$(systemctl show -p User --value wazuh-ai-analyzer-shadow)" = "wazuh-ai-analyzer-shadow" ]
+          id -nG wazuh-ai-analyzer-shadow | tr ' ' '\n' | grep -qx wazuh
+          if id -nG wazuh-ai-analyzer | tr ' ' '\n' | grep -qx wazuh; then echo "production user in the alert group"; exit 1; fi
+          [ "$(sudo stat -c %U /opt/wazuh-ai-analyzer/data-shadow)" = "wazuh-ai-analyzer-shadow" ]
+          pid="$(systemctl show -p MainPID --value wazuh-ai-analyzer-shadow)"
+          grep -q '^CapEff:[[:space:]]*0000000000000000$' "/proc/${pid}/status"
+          [ "$(sudo nsenter -t "${pid}" -m -- ls -A /var/ossec)" = "logs" ]
+          # the shadow instance cannot write the data of the production instance
+          if sudo nsenter -t "${pid}" -m -- touch /opt/wazuh-ai-analyzer/data/ci-write-test 2>/dev/null; then
+            echo "the shadow instance must not write the production data directory"; exit 1
+          fi
+          journalctl -u wazuh-ai-analyzer-shadow --no-pager -n 20
+          # an ACL install takes a user out of the alert group that an earlier install put it into
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin wazuh-ai-analyzer-drop
+          sudo usermod -aG wazuh wazuh-ai-analyzer-drop
+          sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance drop \
+            --gemini-key-file "${RUNNER_TEMP}/key" --alerts-access acl --no-start
+          if id -nG wazuh-ai-analyzer-drop | tr ' ' '\n' | grep -qx wazuh; then
+            echo "the ACL install must remove the user from the alert group"; exit 1
+          fi
+          sudo getfacl -p /var/ossec/logs/alerts | grep -q '^user:wazuh-ai-analyzer-drop:r-x$'
+          # a seed that is not a watermark is refused (here: the credential file, as a service could link it)
+          if sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance other \
+            --gemini-key-file "${RUNNER_TEMP}/key" --seed-watermark "${RUNNER_TEMP}/key" --no-start; then
+            echo "a seed that is not a watermark must be refused"; exit 1
+          fi
+          # a group that grants more than the alerts is refused, and nothing is installed
+          sudo chgrp adm /var/ossec/logs/alerts/alerts.json
+          if sudo "${RUNNER_TEMP}"/extract/*/deploy/install.sh --instance other \
+            --gemini-key-file "${RUNNER_TEMP}/key" --alerts-access group --no-start; then
+            echo "the group adm must be refused"; exit 1
+          fi
+          sudo chgrp wazuh /var/ossec/logs/alerts/alerts.json
+          test ! -e /etc/systemd/system/wazuh-ai-analyzer-other.service
+          test ! -e /opt/wazuh-ai-analyzer/data-other
+          # the production service was not disturbed
+          systemctl is-active wazuh-ai-analyzer
+          [ "$(systemctl show -p NRestarts --value wazuh-ai-analyzer)" = "0" ]
+
   publish:
     name: release-publish
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -282,7 +373,8 @@ jobs:
           tarball="$(ls ./*.tar.gz)"
           cp "${BUNDLE}" "${tarball#./}.intoto.jsonl"
           flags=()
-          if [[ "${TAG}" == *-* ]]; then flags+=(--prerelease); fi
+          # Everything but a plain vMAJOR.MINOR.PATCH (v2.0.0-rc.1, v2.0.0rc1, ...) is a pre-release.
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then flags+=(--prerelease); fi
           {
             echo "Release tarball of the Wazuh AI Analyzer ${TAG#v}. Installation and upgrade: INSTALL.md inside the tarball."
             echo

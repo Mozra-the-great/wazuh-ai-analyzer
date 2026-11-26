@@ -276,7 +276,9 @@ def test_package_and_pyproject_versions_must_agree(repo: Path, tmp_path: Path) -
         _build(repo, tmp_path / "a")
 
 
-@pytest.mark.parametrize("version", ["2.0", "v2.0.0", "2.0.0 x", "2.0.0/../x"])
+@pytest.mark.parametrize(
+    "version", ["2.0", "v2.0.0", "2.0.0 x", "2.0.0/../x", "2.0.0rc", "2.0.0c1"]
+)
 def test_a_malformed_version_is_refused(repo: Path, tmp_path: Path, version: str) -> None:
     _write(repo, "wazuh_ai_analyzer/__init__.py", f'__version__ = "{version}"\n')
     _write(repo, "pyproject.toml", f'[project]\nname = "x"\nversion = "{version}"\n')
@@ -292,6 +294,47 @@ def test_release_and_prerelease_versions_are_accepted(
     _write(repo, "pyproject.toml", f'[project]\nname = "x"\nversion = "{version}"\n')
     path, _, _ = _build(repo, tmp_path / "a")
     assert path.name == f"wazuh-ai-analyzer-{version}.tar.gz"
+
+
+@pytest.mark.parametrize(
+    ("package", "release"),
+    [
+        ("2.0.0rc1", "2.0.0-rc.1"),
+        ("2.0.0a3", "2.0.0-a.3"),
+        ("2.0.0b12", "2.0.0-b.12"),
+        ("2.0.0", "2.0.0"),
+        ("2.0.0-rc.1", "2.0.0-rc.1"),
+        ("2.0.0.dev0", "2.0.0.dev0"),
+    ],
+)
+def test_the_release_form_of_a_version(package: str, release: str) -> None:
+    assert script.release_form(package) == release
+
+
+@pytest.mark.parametrize("requested", ["2.0.0-rc.1", "2.0.0rc1"])
+def test_a_pep440_prerelease_builds_under_its_tag_name(
+    repo: Path, tmp_path: Path, requested: str
+) -> None:
+    _write(repo, "wazuh_ai_analyzer/__init__.py", '__version__ = "2.0.0rc1"\n')
+    _write(repo, "pyproject.toml", '[project]\nname = "x"\nversion = "2.0.0rc1"\n')
+    path, _, _ = _build(repo, tmp_path / "a", version=requested)
+    assert path.name == "wazuh-ai-analyzer-2.0.0-rc.1.tar.gz"
+    names = {member.name for member in _members(path)}
+    assert "wazuh-ai-analyzer-2.0.0-rc.1/VERSION" in names
+    with tarfile.open(path) as archive:
+        member = archive.extractfile("wazuh-ai-analyzer-2.0.0-rc.1/VERSION")
+        assert member is not None
+        assert member.read() == b"2.0.0-rc.1\n"
+
+
+@pytest.mark.parametrize("requested", ["2.0.0", "2.0.0-rc.2", "2.0.0rc2", "2.0.1-rc.1"])
+def test_a_tag_that_is_not_the_prerelease_is_refused(
+    repo: Path, tmp_path: Path, requested: str
+) -> None:
+    _write(repo, "wazuh_ai_analyzer/__init__.py", '__version__ = "2.0.0rc1"\n')
+    _write(repo, "pyproject.toml", '[project]\nname = "x"\nversion = "2.0.0rc1"\n')
+    with pytest.raises(script.BuildError, match="is not the package version"):
+        _build(repo, tmp_path / "a", version=requested)
 
 
 def test_a_dirty_tree_is_refused_without_the_flag(repo: Path, tmp_path: Path) -> None:

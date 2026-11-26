@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Build the reproducible release tarball of the rewrite (`wazuh-ai-analyzer-<version>.tar.gz`).
 
+`<version>` is the release form of `__version__`: `2.0.0` stays, the PEP 440 pre-release
+`2.0.0rc1` becomes `2.0.0-rc.1` (the git tag `v2.0.0-rc.1`, the file name, `VERSION`).
+
 The tarball is what a deployment installs (see docs/install.md). It holds the Python
 package with the built dashboard (`wazuh_ai_analyzer/web/ui/`, git-ignored, so it exists
 only here), the hash-pinned `requirements.txt`, the systemd unit and installer under
@@ -43,6 +46,9 @@ PACKAGE_DIR: Final = "wazuh_ai_analyzer"
 UI_BUILD_DIR: Final = "wazuh_ai_analyzer/web/ui"
 UI_MANIFEST: Final = "ui-manifest.json"
 VERSION_RE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
+# PEP 440 pre-release (`2.0.0rc1`), which is what `__version__` and pyproject.toml carry,
+# against the form of the git tag, the tarball and the release directory (`2.0.0-rc.1`).
+PEP440_PRE_RE: Final = re.compile(r"^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$")
 LICENSE_FILE_RE: Final = re.compile(r"^(licen[cs]e|notice|copying)(\..+)?$", re.IGNORECASE)
 
 # Tracked files that are not part of the release: lint config of the package sources, the
@@ -125,15 +131,30 @@ def package_version(root: Path) -> str:
     return code
 
 
+def release_form(version: str) -> str:
+    """The name of a version in tags, file names and directories: `2.0.0rc1` -> `2.0.0-rc.1`.
+
+    The package carries the PEP 440 spelling (what `pip` and `importlib.metadata` report);
+    the tag, the tarball and `releases/<version>` carry the dashed one. Anything else,
+    including a version that is already dashed, is returned unchanged.
+    """
+    match = PEP440_PRE_RE.match(version)
+    if match is None:
+        return version
+    return f"{match.group(1)}-{match.group(2)}.{match.group(3)}"
+
+
 def resolve_version(root: Path, requested: str | None) -> str:
-    version = package_version(root)
-    if requested is not None and requested != version:
+    """The version of the release in its tag form; `requested` (the tag) must be the same."""
+    package = package_version(root)
+    version = release_form(package)
+    if requested is not None and release_form(requested) != version:
         raise BuildError(
-            f"requested version {requested!r} is not the package version {version!r};"
+            f"requested version {requested!r} is not the package version {package!r};"
             " bump __version__ and pyproject.toml in the release commit first"
         )
     if not VERSION_RE.match(version):
-        raise BuildError(f"{version!r} is not a version like 2.0.0 or 2.0.0-rc.1")
+        raise BuildError(f"{package!r} is not a version like 2.0.0, 2.0.0rc1 or 2.0.0-rc.1")
     return version
 
 
@@ -376,7 +397,9 @@ def build(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the reproducible release tarball.")
-    parser.add_argument("--version", help="must equal __version__ (default: __version__)")
+    parser.add_argument(
+        "--version", help="the tag version; must be __version__ (default: __version__)"
+    )
     parser.add_argument("--output", default="dist", type=Path, help="output directory")
     parser.add_argument("--root", default=Path(__file__).resolve().parent.parent, type=Path)
     parser.add_argument("--source-date-epoch", type=int, help="default: $SOURCE_DATE_EPOCH or HEAD")

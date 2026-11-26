@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import os
 import stat
+from pathlib import Path
 from typing import Any, NoReturn
 
 # A key file is a few dozen bytes; anything bigger is not a key file.
@@ -91,15 +92,25 @@ def read_secret_file(path: str, *, systemd_credential: bool = False) -> str:
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_BINARY", 0)
     )
+    directory_fd: int | None = None
     try:
-        fd = os.open(path, flags)
-    except FileNotFoundError:
-        raise SecretFileError(f"{path}: file does not exist") from None
-    except PermissionError:
-        raise SecretFileError(f"{path}: not readable by the service user") from None
-    except OSError as exc:
-        # ELOOP is what O_NOFOLLOW reports for a symlink.
-        raise SecretFileError(f"{path}: cannot be opened ({exc.strerror or 'error'})") from None
+        if systemd_credential and hasattr(os, "geteuid"):
+            directory_fd = _open_credentials_directory(path, os.geteuid())
+        try:
+            if directory_fd is not None:
+                fd = os.open(Path(path).name, flags, dir_fd=directory_fd)
+            else:
+                fd = os.open(path, flags)
+        except FileNotFoundError:
+            raise SecretFileError(f"{path}: file does not exist") from None
+        except PermissionError:
+            raise SecretFileError(f"{path}: not readable by the service user") from None
+        except OSError as exc:
+            # ELOOP is what O_NOFOLLOW reports for a symlink.
+            raise SecretFileError(f"{path}: cannot be opened ({exc.strerror or 'error'})") from None
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -115,6 +126,49 @@ def read_secret_file(path: str, *, systemd_credential: bool = False) -> str:
         return data.decode("utf-8").strip()
     except UnicodeDecodeError:
         raise SecretFileError(f"{path}: not valid UTF-8 text") from None
+
+
+def _open_credentials_directory(path: str, euid: int) -> int:
+    """Open the directory of a systemd credential and check it on the descriptor.
+
+    The relaxed file rules for credentials rest on the directory being private to the
+    service (systemd creates it `0700` for the unit's user). `CREDENTIALS_DIRECTORY` comes
+    from the environment, so the claim is verified instead of believed: the directory must
+    be owned by the service user or root and must give others no access. The file is then
+    opened relative to this descriptor, so the directory cannot be swapped in between.
+    """
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    directory = str(Path(path).parent)
+    try:
+        fd = os.open(directory, flags)
+    except FileNotFoundError:
+        raise SecretFileError(f"{path}: file does not exist") from None
+    except OSError as exc:
+        raise SecretFileError(
+            f"{directory}: credentials directory cannot be opened ({exc.strerror or 'error'})"
+        ) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise SecretFileError(f"{directory}: credentials directory is not a directory")
+        if info.st_uid not in {euid, 0}:
+            raise SecretFileError(
+                f"{directory}: credentials directory must be owned by the service user or root"
+            )
+        if info.st_mode & 0o007:
+            raise SecretFileError(
+                f"{directory}: credentials directory mode {stat.S_IMODE(info.st_mode):04o} "
+                "is too permissive, others must have no access"
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def _check_owner_and_mode(path: str, info: os.stat_result, systemd_credential: bool) -> None:
