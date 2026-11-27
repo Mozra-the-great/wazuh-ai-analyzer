@@ -36,7 +36,8 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Final
 
-from ..analysis.backend import AnalysisBackend, BackendFailure, BatchContext
+from ..analysis.backend import AnalysisBackend, AnalysisResult, BackendFailure, BatchContext
+from ..analysis.calibration import calibrate
 from ..config import Config
 from ..ingest.batches import StoredBatch
 from ..ingest.sanitize import AlertGroup, sanitize_group
@@ -244,6 +245,7 @@ class Pipeline:
             if failure is not None:
                 self.handle_failure(batch_id, failure)
                 return
+            result = self._calibrate(result, groups, batch_id, source)
             if result.suspicious_downgrades:
                 self.counters.inc("suspicious_downgrades", result.suspicious_downgrades)
             if result.safety_blocked:
@@ -279,6 +281,24 @@ class Pipeline:
                 log.exception("Batch %d: could not be queued", batch_id)
         finally:
             self._discard_inflight(batch_id)
+
+    def _calibrate(
+        self, result: AnalysisResult, groups: Sequence[AlertGroup], batch_id: int, source: Source
+    ) -> AnalysisResult:
+        """The severity checks of `analysis.calibration`; a failure keeps the backend's result.
+
+        A backlog batch is checked against its own alerts only: the batches next to it
+        in the database were not written at the time of its alerts.
+        """
+        try:
+            history = self._repo if source == "live" else None
+            calibrated = calibrate(result, groups, history=history, batch_id=batch_id)
+        except Exception:
+            log.exception("Batch %d: severity calibration failed, result kept as it is", batch_id)
+            return result
+        if calibrated.calibrated:
+            log.info("Batch %d: %d finding(s) calibrated", batch_id, calibrated.calibrated)
+        return calibrated
 
     def _note_failure(self, failure: BackendFailure) -> None:
         """Gate bookkeeping that the legacy code did while the request slot was held."""
