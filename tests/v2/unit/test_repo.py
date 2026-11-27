@@ -211,3 +211,30 @@ def test_get_unknown_batch_and_counts(repo: Repository) -> None:
     repo.insert_batch(alert_count=1, raw_groups="[]", source="live")
     repo.insert_batch(alert_count=1, raw_groups="[]", source="live", status="pending")
     assert repo.count_batches_by_status() == {"analyzing": 1, "pending": 1}
+
+
+# ── decision scratch space (#88) ─────────────────────────────────────────────
+def test_decision_partial_round_trips_and_is_cleared_on_completion(repo: Repository) -> None:
+    batch_id = repo.insert_batch(alert_count=1, raw_groups="[]", source="live", mode="decision")
+    assert repo.load_decision_partial(batch_id) is None
+    repo.save_decision_partial(batch_id, '{"version": "1-x", "groups": {}}')
+    assert repo.load_decision_partial(batch_id) == '{"version": "1-x", "groups": {}}'
+    repo.save_decision_partial(batch_id, "{}")
+    assert repo.load_decision_partial(batch_id) == "{}"
+    repo.complete_batch(batch_id, summary="s", overall_risk="info", findings=[], mode="decision")
+    assert repo.load_decision_partial(batch_id) is None
+
+
+def test_decision_partial_of_an_unknown_batch_is_none(repo: Repository) -> None:
+    assert repo.load_decision_partial(404) is None
+    repo.save_decision_partial(404, "{}")  # updates no row, raises nothing
+    assert repo.load_decision_partial(404) is None
+
+
+def test_a_failed_batch_drops_its_scratch_data(
+    repo: Repository,
+) -> None:
+    batch_id = repo.insert_batch(alert_count=1, raw_groups="[]", source="live")
+    repo.save_decision_partial(batch_id, "{}")
+    repo.fail_batch(batch_id, reason="permanent: x")
+    assert repo.load_decision_partial(batch_id) is None

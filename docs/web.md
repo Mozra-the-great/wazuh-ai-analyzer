@@ -45,7 +45,12 @@ on); with 0, waitress removes the `X-Forwarded-*` headers before the app can see
 are not tied to the password hash: after changing `DASHBOARD_PASSWORD_HASH`, restart
 and run `DELETE FROM web_sessions` (or wait for `SESSION_LIFETIME`).
 Set `TRUSTED_PROXY_HOPS` only when a reverse proxy really sits in front **and** the
-service port cannot be reached around it (otherwise a client sends its own header).
+service port cannot be reached around it (otherwise a client sends its own header). The
+configuration enforces this: with `TRUSTED_PROXY_HOPS` above 0 the service starts only when
+`LISTEN_HOST` is a loopback address (127.0.0.0/8, `::1`, `localhost`: the proxy runs on the same
+host) or `TRUSTED_PROXY_ADDRESSES` lists the proxy (IP addresses or networks, e.g.
+`192.168.0.5,10.0.0.0/24`). With that list the headers are believed only from those peers; a
+request from any other address loses its `X-Forwarded-*` headers and counts under its socket address.
 
 ## CSRF
 
@@ -129,8 +134,10 @@ All answers are JSON (`Content-Type: application/json`, `nosniff`). Errors are
 `ui/` is a plain Vite SPA (Svelte 5, TypeScript strict; not SvelteKit, because kern's strict-CSP
 test covers only the Vite path) on kern, theme `code` (dark by default, `code-light` through
 kern's `ThemeToggle`, the choice is kept in `localStorage` under `wai-theme`). Texts are German.
-Inter and JetBrains Mono come from pinned `@fontsource-variable` packages and are served from this
-origin (Latin subset); Silkscreen is not shipped, the display face falls back to JetBrains Mono.
+The fonts are the three that kern prescribes for `code` (kern ships none): Inter and JetBrains Mono
+from pinned `@fontsource-variable` packages, Silkscreen (weights 400 and 700, the display weight of
+`code`) from the pinned `@fontsource/silkscreen` package. All are served from this origin (Latin
+subset, `font-src 'self'`).
 
 * **Build:** `cd ui && npm ci && npm run build` writes `wazuh_ai_analyzer/web/ui/`. The output is
   generated, git-ignored and shipped in the release tarball (P7); a checkout that was never built

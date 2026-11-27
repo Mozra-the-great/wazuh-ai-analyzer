@@ -13,8 +13,9 @@ python -m wazuh_ai_analyzer run               # ingest + analysis until SIGTERM/
 
 `run` migrates the database first, so `migrate` is optional before it. Until the web layer
 (#86) lands, `run` serves no dashboard; the deployed service is still `analyzer.py`.
-`ANALYSIS_MODE=decision` is accepted by `check-config` but `run` refuses it (exit code 78)
-until the decision backend (#88) exists.
+`ANALYSIS_MODE=decision` runs the Gemini Decision 1 backend (#88); see
+[decision-api.md](decision-api.md). `python -m wazuh_ai_analyzer probe-decision` makes one
+real call with a made-up alert group (needs the API key, never part of CI).
 
 Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid configuration.
 
@@ -33,10 +34,10 @@ Exit codes: `0` ok, `1` runtime failure (database, file system), `78` invalid co
 
 | Variable | Change |
 | --- | --- |
-| `GEMINI_MODEL` | Default is now `gemini-3.1-flash-lite`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
+| `GEMINI_MODEL` | Default is now `gemini-flash-lite-latest`. The old default `gemini-1.5-flash` has been retired by Google. An env file that sets the model is unaffected. |
 | `SESSION_COOKIE_SECURE` | Strict boolean, see above. With `true` the cookies are named `__Host-wai_*` and HSTS is sent. |
 | `STATIC_DIR` | Accepted, ignored with a warning (the UI is part of the package). |
-| `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. |
+| `TRUSTED_PROXY_HOPS` | Same meaning; without a proxy, `X-Forwarded-*` headers are removed by the server itself. A value above 0 is refused unless `LISTEN_HOST` is a loopback address (the proxy runs on the same host) or `TRUSTED_PROXY_ADDRESSES` names the proxy: otherwise any client that reaches the port could send its own `X-Forwarded-For`. |
 | session cookie | `SameSite=Strict` (was `Lax`), server-side sessions, name `wai_session` / `__Host-wai_session`. Existing sessions end at the cutover. |
 | login / logout | `POST /api/login` and `POST /api/logout` (JSON, CSRF token); `GET /logout` is a confirmation page. See `docs/web.md`. |
 | `/api/findings` | `limit` below 1 or non-numeric, a negative `offset` or an unknown `severity`/`source` is 400 (was: `limit=-1` returned all rows, non-numeric values were a 500). |
@@ -55,8 +56,33 @@ A key file must be a regular file (no symlink), owned by the service user, with 
 `0600` or `0400`, at most 4096 bytes. Otherwise the service refuses to start. A key is
 1 to 512 printable ASCII characters without whitespace.
 
+The file in `$CREDENTIALS_DIRECTORY` is judged less strictly, because systemd owns that
+directory and keeps it private to the service user. systemd normally chowns the credential
+to the service user (mode `0400`). When it cannot, for example in a container without a
+tmpfs for the credentials, it leaves the file owned by root and grants the service user read
+access through an ACL, so the mode shows `0440`. Both are accepted there: the owner is the
+service user or root, the group bits are ignored, and access for others is still refused.
+The directory is verified instead of trusted (the variable comes from the environment): it is opened
+without following a symlink, its owner must be the service user or root and it must give others no
+access (`mode & 0007 == 0`), and the file is opened relative to it.
+`GEMINI_API_KEY_FILE` always keeps the strict rule above.
+
 Without any key the service still starts (as `analyzer.py` does) and the dashboard shows
 "no key". `check-config --require-api-key` fails in that case.
+
+Configure your own API key and check your provider's terms for how you use it.
+
+## The model alias
+
+The default `GEMINI_MODEL` is `gemini-flash-lite-latest`, Google's alias for the newest release of
+the Flash-Lite family (<https://aistudio.google.com/docs/models>, section "Latest"; introduced in
+<https://developers.googleblog.com/en/continuing-to-bring-you-our-latest-models-with-an-improved-gemini-2-5-flash-and-flash-lite-release/>).
+It is a moving target: Google swaps the model behind it with every Flash-Lite release and announces
+the change two weeks ahead by e-mail. The model behind it can rate the same alerts differently, and
+its rate limits and free quota can change with it. A default installation therefore keeps working
+when a model version is retired, but its findings are only comparable within one model version.
+Set a versioned model (for example `gemini-3.1-flash-lite`) when you need stable behaviour, for
+instance while you compare findings over time.
 
 ## Variables
 
@@ -74,7 +100,7 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 | `HISTORY_PAUSE` | `8.0` | 0 to 3600 seconds |
 | `GEMINI_API_KEY` | none | see above |
 | `GEMINI_API_KEY_FILE` | none | path (new) |
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | letters, digits, `.`, `_`, `-`, up to 100 characters |
+| `GEMINI_MODEL` | `gemini-flash-lite-latest` | letters, digits, `.`, `_`, `-`, up to 100 characters (see "The model alias" below) |
 | `GEMINI_TEMPERATURE` | `0.15` | 0 to 2 |
 | `GEMINI_CONCURRENCY` | `2` | 1 to 64 |
 | `INFRA_CONTEXT` | `a self-hosted Linux server environment` | printable text, up to 2000 characters |
@@ -95,7 +121,8 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 | `DASHBOARD_PASSWORD_HASH` | none (the dashboard answers 503) | Werkzeug hash `<method>$<salt>$<hash>` |
 | `SESSION_LIFETIME` | `28800` | 60 to 2592000 seconds |
 | `LOGIN_MAX_ATTEMPTS` | `5` | 1 to 1000 |
-| `TRUSTED_PROXY_HOPS` | `0` | 0 to 10 |
+| `TRUSTED_PROXY_HOPS` | `0` | 0 to 10; above 0 needs a loopback `LISTEN_HOST` or `TRUSTED_PROXY_ADDRESSES` (new rule) |
+| `TRUSTED_PROXY_ADDRESSES` | none | comma-separated IP addresses or networks of the reverse proxy (new) |
 | `SESSION_COOKIE_SECURE` | `true` | `true`, `1`, `yes`, `false`, `0`, `no` |
 | `ANALYSIS_MODE` | `llm` | `llm`, `decision` (new) |
 | `DECISION_MODEL` | `gemini-decision-1` | model name, as `GEMINI_MODEL` (new) |
@@ -106,6 +133,12 @@ Without any key the service still starts (as `analyzer.py` does) and the dashboa
 Comma-separated `<severity>=<value>` pairs. A value is a number above 0 up to 1, or
 `never` (no finding of that severity). Severities that are not listed keep their default.
 Example: `high=0.45,info=0.9`.
+
+The value is the minimum probability of the `relevant` question for a group that the model
+rates with that severity. The API clamps a yes/no probability to 0.01 to 0.99, so a value
+of `1` behaves like `never`. In `decision` mode the key is read from the same places as in
+`llm` mode, and `DECISION_MODEL` replaces `GEMINI_MODEL` (`GEMINI_TEMPERATURE` is not used).
+`GEMINI_CONCURRENCY` bounds the batches in flight; a batch sends one request per alert group.
 
 ## Database
 

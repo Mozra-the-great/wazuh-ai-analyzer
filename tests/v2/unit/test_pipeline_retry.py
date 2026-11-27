@@ -16,7 +16,7 @@ import pytest
 import requests
 
 from v2.helpers import FakeClock
-from v2.pipeline_support import KEY, FakeResponse, PipelineEnv, gemini_ok, make_env
+from v2.pipeline_support import ALERT, KEY, FakeResponse, PipelineEnv, gemini_ok, make_env
 from wazuh_ai_analyzer.analysis.backend import AnalysisResult, BackendFailure, BatchContext
 from wazuh_ai_analyzer.ingest.sanitize import AlertGroup
 from wazuh_ai_analyzer.pipeline import PERMANENT_STREAK_LIMIT
@@ -194,6 +194,22 @@ def test_unparseable_answer_is_retried_a_few_times_only(env: PipelineEnv) -> Non
     assert env.stats()["dropped_bad_response"] == 1
 
 
+def test_a_blocked_batch_is_dropped_with_the_reason_in_last_error(env: PipelineEnv) -> None:
+    env.install(FakeResponse(200, {"promptFeedback": {"blockReason": "SAFETY"}}))
+    batch_id = env.new_batch()
+    limit = env.config.retry.bad_response_max
+    for _ in range(limit):
+        env.make_due(batch_id)
+        env.run(batch_id)
+    r = env.row(batch_id)
+    assert r["status"] == "error"
+    assert r["last_error"] == (
+        f"bad_response nach {limit} Versuchen: Gemini blockiert die Anfrage (blockReason=SAFETY)"
+    )
+    assert contract.classify_error(r["last_error"]) == contract.ERROR_REASON_DROPPED
+    assert env.stats()["dropped_bad_response"] == 1
+
+
 def test_transient_failures_expire_after_max_age(env: PipelineEnv) -> None:
     env.install(FakeResponse(503, text="x"))
     batch_id = env.new_batch()
@@ -227,7 +243,8 @@ def test_unexpected_exception_does_not_strand_the_batch(env: PipelineEnv) -> Non
 def test_a_failing_database_write_leaves_no_half_written_batch(env: PipelineEnv) -> None:
     """A crash while the findings are written rolls the whole result back."""
     env.install(gemini_ok({**_two_findings(), "summary": "s"}))
-    batch_id = env.new_batch()
+    second = {**ALERT, "rule": {"id": "5712", "level": 5, "description": "other rule"}}
+    batch_id = env.new_batch(alerts=[ALERT, second])
     original = env.repo.complete_batch
     calls: list[int] = []
 
@@ -256,7 +273,10 @@ def _two_findings() -> dict[str, object]:
         "affected_agents": ["ct100"],
         "rule_ids": ["5710"],
     }
-    return {"overall_risk": "high", "findings": [f, {**f, "title": "u"}]}
+    return {
+        "overall_risk": "high",
+        "findings": [f, {**f, "title": "u", "rule_ids": ["5712"]}],
+    }
 
 
 # ── persistence across restarts ───────────────────────────────────────────────
@@ -587,10 +607,12 @@ def test_any_backend_plugs_in_and_gets_the_batch_context(env: PipelineEnv) -> No
     env.run(batch_id)
     env.make_due(batch_id)
     assert env.pipeline.retry_once()
-    assert [c for _, c in backend.seen] == [
-        BatchContext(batch_id=batch_id, source="history", is_retry=False),
-        BatchContext(batch_id=batch_id, source="history", is_retry=True),
+    assert [(c.batch_id, c.source, c.is_retry) for _, c in backend.seen] == [
+        (batch_id, "history", False),
+        (batch_id, "history", True),
     ]
+    # The pipeline hands the repository over as the scratch space of per-group backends.
+    assert all(c.partial is env.repo for _, c in backend.seen)
     assert backend.seen[0][0][0]["rule_id"] == "5710"
     assert env.row(batch_id)["status"] == "done"
 

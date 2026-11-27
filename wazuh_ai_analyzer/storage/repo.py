@@ -225,7 +225,8 @@ class Repository:
         with self._db.transaction() as conn:
             updated = conn.execute(
                 "UPDATE batches SET summary=?, overall_risk=?, status='done', mode=?,"
-                " decision_version=?, next_attempt=NULL, last_error=NULL WHERE id=?",
+                " decision_version=?, next_attempt=NULL, last_error=NULL, decision_partial=NULL"
+                " WHERE id=?",
                 (summary, overall_risk, mode, decision_version, batch_id),
             ).rowcount
             if updated != 1:
@@ -251,6 +252,37 @@ class Repository:
                     raise RuntimeError("INSERT did not return a row id")
                 ids.append(cur.lastrowid)
         return ids
+
+    # ── history for the analysis ─────────────────────────────────────────────
+    def recent_fact_batches(self, *, exclude_batch: int, hours: float, limit: int) -> list[str]:
+        """`raw_groups` of the newest batches of the last `hours` whose groups carry facts.
+
+        The severity calibration looks here for package activity that happened before
+        the batch at hand (#118-#120). The LIKE only skips batches without any fact; the
+        caller parses and re-sanitises the documents.
+        """
+        since = iso_utc(self._clock() - hours * 3600.0)
+        with self._db.reader() as conn:
+            rows = conn.execute(
+                "SELECT raw_groups FROM batches WHERE id != ? AND created_at >= ?"
+                " AND raw_groups LIKE '%\"facts\"%' ORDER BY id DESC LIMIT ?",
+                (exclude_batch, since, limit),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    # ── decision scratch space (#88) ─────────────────────────────────────────
+    def load_decision_partial(self, batch_id: int) -> str | None:
+        """The answers a decision-mode batch already has (a JSON document), if any."""
+        with self._db.reader() as conn:
+            row = conn.execute(
+                "SELECT decision_partial FROM batches WHERE id=?", (batch_id,)
+            ).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
+    def save_decision_partial(self, batch_id: int, document: str) -> None:
+        """Keep the answers so far; `complete_batch` clears them."""
+        with self._db.transaction() as conn:
+            conn.execute("UPDATE batches SET decision_partial=? WHERE id=?", (document, batch_id))
 
     def set_pending(
         self,
@@ -279,7 +311,7 @@ class Repository:
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE batches SET status='error', next_attempt=NULL, last_error=?,"
-                " attempts=MAX(attempts, ?) WHERE id=?",
+                " attempts=MAX(attempts, ?), decision_partial=NULL WHERE id=?",
                 (reason, attempts, batch_id),
             )
 
@@ -348,8 +380,8 @@ class Repository:
             ids: list[int] = []
             for row in rows:
                 updated = conn.execute(
-                    "UPDATE batches SET status='error', next_attempt=NULL, last_error=?"
-                    " WHERE id=? AND status='pending'",
+                    "UPDATE batches SET status='error', next_attempt=NULL, last_error=?,"
+                    " decision_partial=NULL WHERE id=? AND status='pending'",
                     (reason, row["id"]),
                 ).rowcount
                 if updated == 1:
@@ -463,8 +495,7 @@ class Repository:
         with self._db.reader() as conn:
             conn.execute("BEGIN")
             rows = conn.execute(
-                f"SELECT {_FINDING_COLUMNS} {join} {where}"
-                " ORDER BY f.id DESC LIMIT ? OFFSET ?",
+                f"SELECT {_FINDING_COLUMNS} {join} {where} ORDER BY f.id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
             total = int(

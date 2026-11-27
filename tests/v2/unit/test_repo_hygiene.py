@@ -67,7 +67,7 @@ def test_configuration_doc_lists_every_variable() -> None:
     env = RecordingEnv()
     load_config(env)
     variables = env.looked_up - {"CREDENTIALS_DIRECTORY"}
-    assert len(variables) == 38
+    assert len(variables) == 39
     for name in sorted(variables):
         assert f"`{name}`" in doc, f"{name} is not documented"
     for mode in ANALYSIS_MODES:

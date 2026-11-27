@@ -22,7 +22,7 @@ from typing import Any, Final, Protocol
 import requests
 
 from ..config import GeminiConfig
-from ..ingest.sanitize import AlertGroup
+from ..ingest.sanitize import AlertGroup, clean_text
 from ..logging_setup import RedactSecrets
 from ..secret import Secret
 from ..storage.contract import AnalysisMode
@@ -98,7 +98,7 @@ def is_config_error_body(resp: HttpResponse) -> bool:
     )
 
 
-def _quota_message(resp: HttpResponse, scrub: Callable[[str], str]) -> str:
+def quota_message(resp: HttpResponse, scrub: Callable[[str], str]) -> str:
     """The provider's own message, scrubbed *before* it is cut: a secret that the
     cut splits in two would no longer match the redaction."""
     try:
@@ -106,6 +106,49 @@ def _quota_message(resp: HttpResponse, scrub: Callable[[str], str]) -> str:
     except Exception:
         message = scrub(resp.text)[:150]
     return scrub(str(message))
+
+
+def quota_failure(resp: HttpResponse, scrub: Callable[[str], str]) -> BackendFailure:
+    """A 429 as a `quota` failure: the wait is `Retry-After`, else a day's or a minute's worth."""
+    retry_after = retry_after_seconds(resp)
+    message = quota_message(resp, scrub)
+    if retry_after <= 0:
+        lowered = message.lower()
+        daily = any(word in lowered for word in _DAILY_QUOTA_WORDS)
+        retry_after = DAILY_QUOTA_WAIT if daily else MINUTE_QUOTA_WAIT
+    return BackendFailure("quota", message, retry_after)
+
+
+# `finishReason` values of a candidate that the provider cut off for content reasons.
+_BLOCK_FINISH_REASONS: Final = frozenset(
+    {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY", "RECITATION"}
+)
+
+
+def block_reason(data: object) -> str | None:
+    """The `last_error` text of an answer the provider blocked, or None for any other answer.
+
+    A block is an answer without text: `promptFeedback.blockReason` when the prompt was
+    refused, or a candidate whose `finishReason` is a content reason. Without this the
+    missing text would raise a `KeyError` and look like a broken answer (#97); the
+    explicit text tells the operator what happened. The reason is a short enum name of
+    the provider, cleaned before it is stored.
+    """
+    if not isinstance(data, dict):
+        return None
+    feedback = data.get("promptFeedback")
+    reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
+    if isinstance(reason, str) and reason:
+        return f"Gemini blockiert die Anfrage (blockReason={clean_text(reason, 40)})"
+    candidates = data.get("candidates")
+    first = candidates[0] if isinstance(candidates, list) and candidates else None
+    finish = first.get("finishReason") if isinstance(first, dict) else None
+    if isinstance(finish, str) and finish in _BLOCK_FINISH_REASONS:
+        content = first.get("content") if isinstance(first, dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not parts:
+            return f"Gemini blockiert die Antwort (finishReason={finish})"
+    return None
 
 
 def strip_code_fence(text: str) -> str:
@@ -180,10 +223,14 @@ class GeminiLlmBackend:
         try:
             resp = self._post(self.url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 429:
-                raise self._quota_failure(resp)
+                raise quota_failure(resp, self._scrub)
             if not resp.ok:
                 raise self._http_failure(resp)
             data = resp.json()
+            blocked = block_reason(data)
+            if blocked is not None:
+                log.warning("Gemini: %s", blocked)
+                raise BackendFailure("bad_response", blocked)
             raw = data["candidates"][0]["content"]["parts"][0]["text"]
             answer = validate_result(json.loads(strip_code_fence(raw)), groups)
         except BackendFailure:
@@ -207,15 +254,6 @@ class GeminiLlmBackend:
             mode="llm",
             suspicious_downgrades=answer.suspicious_downgrades,
         )
-
-    def _quota_failure(self, resp: HttpResponse) -> BackendFailure:
-        retry_after = retry_after_seconds(resp)
-        message = _quota_message(resp, self._scrub)
-        if retry_after <= 0:
-            lowered = message.lower()
-            daily = any(word in lowered for word in _DAILY_QUOTA_WORDS)
-            retry_after = DAILY_QUOTA_WAIT if daily else MINUTE_QUOTA_WAIT
-        return BackendFailure("quota", message, retry_after)
 
     def _http_failure(self, resp: HttpResponse) -> BackendFailure:
         code = resp.status_code

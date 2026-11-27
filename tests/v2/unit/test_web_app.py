@@ -474,6 +474,42 @@ def test_forwarded_for_is_used_with_trusted_proxy_hops(tmp_path: Path) -> None:
     assert other.status_code == 401
 
 
+def proxied_web(tmp_path: Path) -> WebEnv:
+    return make_web(
+        tmp_path,
+        TRUSTED_PROXY_HOPS="1",
+        LISTEN_HOST="0.0.0.0",  # noqa: S104
+        TRUSTED_PROXY_ADDRESSES="10.0.0.5, 192.168.1.0/24",
+    )
+
+
+def failed_login(web: WebEnv, peer: str, forwarded: str) -> int:
+    response = web.login(
+        password="nope",
+        headers={"X-Forwarded-For": forwarded},
+        environ_base={"REMOTE_ADDR": peer},
+    )
+    return response.status_code
+
+
+@pytest.mark.parametrize("peer", ["10.0.0.5", "192.168.1.77", "::ffff:10.0.0.5"])
+def test_forwarded_for_is_used_from_a_listed_proxy(tmp_path: Path, peer: str) -> None:
+    web = proxied_web(tmp_path)
+    for _ in range(web.config.web.login_max_attempts):
+        failed_login(web, peer, "203.0.113.1")
+    assert failed_login(web, peer, "203.0.113.1") == 429
+    assert failed_login(web, peer, "203.0.113.2") == 401
+
+
+@pytest.mark.parametrize("peer", ["203.0.113.9", "10.0.0.6", "2001:db8::5", "not-an-address"])
+def test_forwarded_for_is_ignored_from_any_other_peer(tmp_path: Path, peer: str) -> None:
+    web = proxied_web(tmp_path)
+    for index in range(web.config.web.login_max_attempts):
+        failed_login(web, peer, f"198.51.100.{index}")
+    # one client, whatever the header claims
+    assert failed_login(web, peer, "198.51.100.250") == 429
+
+
 # ── headers on every route ───────────────────────────────────────────────────
 EXPECTED_HEADERS = {
     "X-Content-Type-Options": "nosniff",

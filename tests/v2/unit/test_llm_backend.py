@@ -19,9 +19,10 @@ from wazuh_ai_analyzer.analysis.llm import (
     REQUEST_TIMEOUT,
     GeminiLlmBackend,
     _default_post,
+    block_reason,
     strip_code_fence,
 )
-from wazuh_ai_analyzer.config import ConfigError, load_config
+from wazuh_ai_analyzer.config import load_config
 from wazuh_ai_analyzer.ingest.sanitize import AlertGroup, sanitize_group
 from wazuh_ai_analyzer.logging_setup import RedactSecrets
 from wazuh_ai_analyzer.secret import Secret
@@ -254,10 +255,9 @@ def test_backend_log_lines_are_scrubbed_by_the_filter(
     assert "***" in caplog.text
 
 
-def test_create_backend_builds_llm_and_refuses_decision_for_now() -> None:
+def test_create_backend_builds_the_backend_of_the_mode() -> None:
     assert create_backend(load_config({})).name == "llm"
-    with pytest.raises(ConfigError, match="ANALYSIS_MODE"):
-        create_backend(load_config({"ANALYSIS_MODE": "decision"}))
+    assert create_backend(load_config({"ANALYSIS_MODE": "decision"})).name == "decision"
 
 
 def test_a_secret_is_scrubbed_before_the_error_text_is_cut() -> None:
@@ -274,3 +274,64 @@ def test_a_secret_in_a_quota_text_is_scrubbed_before_the_cut() -> None:
     failure = failure_of(backend(FakeResponse(429, text="y" * 140 + KEY)))
     assert failure.kind == "quota"
     assert KEY[:6] not in failure.message
+
+
+# ── safety blocks (#97) ──────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            {"promptFeedback": {"blockReason": "SAFETY"}},
+            "Gemini blockiert die Anfrage (blockReason=SAFETY)",
+        ),
+        (
+            {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "candidates": []},
+            "Gemini blockiert die Anfrage (blockReason=PROHIBITED_CONTENT)",
+        ),
+        (
+            {"candidates": [{"finishReason": "SAFETY"}]},
+            "Gemini blockiert die Antwort (finishReason=SAFETY)",
+        ),
+        (
+            {"candidates": [{"finishReason": "PROHIBITED_CONTENT", "content": {"parts": []}}]},
+            "Gemini blockiert die Antwort (finishReason=PROHIBITED_CONTENT)",
+        ),
+        (
+            {"candidates": [{"finishReason": "RECITATION", "content": {}}]},
+            "Gemini blockiert die Antwort (finishReason=RECITATION)",
+        ),
+    ],
+)
+def test_a_blocked_answer_has_its_own_error_text(body: object, message: str) -> None:
+    failure = failure_of(backend(FakeResponse(200, body)))
+    assert failure.kind == "bad_response"
+    assert failure.message == message
+
+
+def test_a_hostile_block_reason_is_cleaned() -> None:
+    body = {"promptFeedback": {"blockReason": "SAFETY‮\n" + "X" * 100}}
+    message = failure_of(backend(FakeResponse(200, body))).message
+    assert "‮" not in message
+    assert "\n" not in message
+    assert len(message) < 120
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"candidates": [{"finishReason": "MAX_TOKENS"}]},  # not a block: stays a broken answer
+        {"candidates": [{"finishReason": "SAFETY", "content": {"parts": [{"text": "{}"}]}}]},
+        {"promptFeedback": {"blockReason": ""}, "candidates": []},
+        {"promptFeedback": "x", "candidates": []},
+    ],
+)
+def test_other_answers_without_text_are_not_reported_as_blocked(body: object) -> None:
+    f = failure_of(backend(FakeResponse(200, body)))
+    assert f.kind == "bad_response"
+    assert "blockiert" not in f.message
+
+
+def test_block_reason_only_reports_real_blocks() -> None:
+    assert block_reason({"candidates": [{"finishReason": "SAFETY"}]}) is not None
+    assert block_reason({"candidates": [{"finishReason": "STOP"}]}) is None
+    assert block_reason([]) is None

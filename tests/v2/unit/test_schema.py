@@ -72,9 +72,9 @@ def test_fresh_database_reaches_the_latest_version(db_path: Path, clock: FakeClo
     db_path.parent.mkdir()
     result = migrate(Database(db_path), clock=clock)
     assert (result.from_version, result.to_version) == (0, LATEST_VERSION)
-    assert result.applied == (1, 2)
+    assert result.applied == (1, 2, 3)
     rows = _query(Database(db_path), "SELECT version, name, applied_at FROM schema_version")
-    assert [r["version"] for r in rows] == [1, 2]
+    assert [r["version"] for r in rows] == [1, 2, 3]
     assert rows[0]["applied_at"] == "2026-11-25T12:00:00+00:00"
 
 
@@ -82,7 +82,7 @@ def test_second_run_is_a_no_op(database: Database) -> None:
     result = migrate(database)
     assert result.applied == ()
     assert result.from_version == result.to_version == LATEST_VERSION
-    assert len(_query(database, "SELECT * FROM schema_version")) == 2
+    assert len(_query(database, "SELECT * FROM schema_version")) == 3
 
 
 def test_new_columns_and_table(database: Database) -> None:
@@ -138,7 +138,7 @@ def test_pre_retry_database_is_adopted_and_keeps_its_data(db_path: Path) -> None
     conn.close()
 
     result = migrate(Database(db_path))
-    assert result.applied == (1, 2)
+    assert result.applied == (1, 2, 3)
     db = Database(db_path)
     with db.reader() as c:
         columns = table_columns(c, "batches")
@@ -209,16 +209,16 @@ def test_a_failing_migration_rolls_back_completely(
         assert "decision" not in table_columns(conn, "findings")
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='web_sessions'").fetchone()
     monkeypatch.undo()
-    assert migrate(db).applied == (2,)
+    assert migrate(db).applied == (2, 3)
 
 
 def test_migration_is_idempotent_when_columns_already_exist(database: Database) -> None:
     # Simulates a crash between the DDL and the version row of an older run.
     with database.transaction() as conn:
-        conn.execute("DELETE FROM schema_version WHERE version=2")
-    assert migrate(database).applied == (2,)
+        conn.execute("DELETE FROM schema_version WHERE version>=2")
+    assert migrate(database).applied == (2, 3)
     with database.reader() as conn:
-        assert current_version(conn) == 2
+        assert current_version(conn) == 3
 
 
 def test_missing_json_functions_are_reported() -> None:

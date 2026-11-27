@@ -18,13 +18,14 @@ placed in HTML here. The UI must render it with `textContent` (see docs/web.md).
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from urllib.parse import urlencode
 
 from flask import Flask, Response, g, jsonify, redirect, request, send_file
@@ -32,7 +33,7 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.wrappers import Response as BaseResponse
 
-from ..config import Config
+from ..config import Config, IPNetwork
 from ..storage.contract import SEVERITIES, SOURCES
 from ..storage.repo import Repository
 from .auth import (
@@ -49,6 +50,9 @@ from .auth import (
 from .headers import build_csp, security_headers
 from .sessions import Session, SessionStore
 from .static_files import StaticSite
+
+if TYPE_CHECKING:
+    from _typeshed.wsgi import StartResponse, WSGIApplication, WSGIEnvironment
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +72,43 @@ PUBLIC_FILES: Final = frozenset(
 )
 PAGE_ALIASES: Final = {"login": "login.html", "logout": "logout.html"}
 PUBLIC_API: Final = frozenset({"/api/session", "/api/login"})
+
+
+class _OnlyFromProxies:
+    """Believe `X-Forwarded-*` only from the configured proxy addresses.
+
+    A request from any other peer reaches the app without those headers, so it is
+    counted under its socket address. `plain` is the app, `fixed` the same app behind
+    `ProxyFix`.
+    """
+
+    def __init__(
+        self,
+        plain: WSGIApplication,
+        fixed: WSGIApplication,
+        proxies: tuple[IPNetwork, ...],
+    ) -> None:
+        self._plain = plain
+        self._fixed = fixed
+        self._proxies = proxies
+
+    def _is_proxy(self, peer: str) -> bool:
+        try:
+            address = ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return any(
+            address in network for network in self._proxies if network.version == address.version
+        )
+
+    def __call__(self, environ: WSGIEnvironment, start_response: StartResponse) -> Iterable[bytes]:
+        if self._is_proxy(str(environ.get("REMOTE_ADDR", ""))):
+            return self._fixed(environ, start_response)
+        for name in [key for key in environ if key.startswith("HTTP_X_FORWARDED_")]:
+            del environ[name]
+        return self._plain(environ, start_response)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +200,13 @@ def create_app(
     if web.trusted_proxy_hops > 0:
         hops = web.trusted_proxy_hops
         # The Host header is passed on by the proxy as it is: not trusted from a header.
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops, x_proto=hops)  # type: ignore[method-assign]
+        fixed = ProxyFix(app.wsgi_app, x_for=hops, x_proto=hops)
+        proxies = web.trusted_proxy_addresses
+        # With TRUSTED_PROXY_ADDRESSES only those peers are believed; the headers of any
+        # other peer are removed. Without it the service listens on loopback (config).
+        app.wsgi_app = (  # type: ignore[method-assign]
+            _OnlyFromProxies(app.wsgi_app, fixed, proxies) if proxies else fixed
+        )
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def error(status: int, message: str, **extra: object) -> Response:

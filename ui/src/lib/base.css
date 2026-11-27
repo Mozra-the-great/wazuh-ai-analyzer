@@ -1,11 +1,6 @@
 /* App-wide rules on top of the kern theme `code`. Only kern tokens (--k-*) are used for colour,
    space and type, so light and dark come from the theme. No inline styles anywhere (CSP). */
 
-/* Silkscreen is not shipped (decision Q5): the pixel display face falls back to the mono face. */
-:root[data-theme] {
-  --k-font-display: var(--k-font-mono);
-}
-
 *,
 *::before,
 *::after {

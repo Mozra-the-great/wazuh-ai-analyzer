@@ -187,8 +187,10 @@ def test_batches_are_the_same_with_the_same_columns(both: tuple[FlaskClient, Web
     new = body(web.client.get("/api/batches"))
     assert len(old) == len(new) == 7
     for old_batch, new_batch in zip(old, new, strict=True):
-        # The legacy `SELECT b.*` on the migrated database returns exactly our columns.
-        assert new_batch == old_batch
+        # The legacy `SELECT b.*` on the migrated database returns exactly our columns,
+        # plus the scratch column of the decision backend, which our API leaves out.
+        assert {k: v for k, v in old_batch.items() if k != "decision_partial"} == new_batch
+        assert old_batch["decision_partial"] is None
 
 
 def test_stats_keep_every_legacy_key_and_the_database_values(

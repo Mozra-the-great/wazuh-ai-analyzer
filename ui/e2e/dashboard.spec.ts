@@ -208,6 +208,29 @@ test.describe('the dashboard', () => {
     await expect(opener).toBeFocused();
   });
 
+  test('a scrolling drawer body is exactly one named tab stop (kern#132)', async ({ browser, baseURL }) => {
+    // A short viewport makes the text-only detail overflow; kern then turns the body into a region.
+    const context = await browser.newContext({ viewport: { width: 360, height: 360 }, locale: 'de-DE' });
+    const page = await context.newPage();
+    const found = await watch(page);
+    await login(page);
+    await page.getByRole('table').locator('tbody tr').nth(1).getByRole('button').click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer).toBeVisible();
+    const region = drawer.getByRole('region', { name: 'Finding-Details' });
+    await expect(region).toHaveCount(1);
+    await expect(region).toHaveAttribute('tabindex', '0');
+    // The app itself adds no second tab stop on the detail content.
+    await expect(drawer.locator('article[tabindex]')).toHaveCount(0);
+    expect(await region.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    // axe (scrollable-region-focusable) and the CSP stay clean with the region in place.
+    await expect(page.getByText('Zusammenfassung des Batches')).toBeVisible();
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
+    expectClean(found, baseURL ?? '');
+    await context.close();
+  });
+
   test('the quota banner counts down and never puts server text through markup', async ({ page, baseURL }) => {
     setState(QUOTA_STATE(new Date(Date.now() + 300_000).toISOString()));
     const found = await watch(page);
@@ -256,6 +279,113 @@ test.describe('the dashboard', () => {
     await expect(html).toHaveAttribute('data-theme', 'code-light');
     await page.getByRole('button', { name: 'Dunkelmodus' }).click();
     await expect(html).toHaveAttribute('data-theme', 'code');
+  });
+});
+
+test.describe('the ruled sheets are closed on all four sides (#112)', () => {
+  // kern's TileGrid draws its left and top line and each Tile its right and bottom line (kern 0.14,
+  // kern#172). The test pins the rendered geometry, not the CSS text: width and colour of every
+  // edge, no second left line on a tile, the line is not covered by a tile or clipped by an
+  // ancestor, and a pixel strip on the line differs from the page background next to it (so no tile
+  // paints over it).
+  const SIZES = {
+    desktop: { width: 1280, height: 900 },
+    mobile: { width: 360, height: 780 },
+  } as const;
+
+  for (const [size, viewport] of Object.entries(SIZES)) {
+    for (const theme of ['code', 'code-light']) {
+      test(`severity tiles: ${size}, ${theme}`, async ({ browser }) => {
+        const context = await browser.newContext({ viewport, locale: 'de-DE', timezoneId: 'Europe/Berlin' });
+        await context.addInitScript((id) => {
+          localStorage.setItem('wai-theme', id);
+        }, theme);
+        const page = await context.newPage();
+        await login(page);
+        const grid = page.getByRole('list', { name: 'Findings nach Schweregrad' });
+        await expect(grid).toHaveCSS('border-top-width', '1px');
+
+        const geometry = await page.evaluate(() => {
+          const list = document.querySelector<HTMLElement>('ul.k-tile-grid');
+          const column = document.querySelector<HTMLElement>('section.list');
+          if (list === null || column === null) throw new Error('tile grid or list section not found');
+          const edges = (el: HTMLElement): Record<string, string> => {
+            const cs = getComputedStyle(el);
+            return {
+              top: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+              right: `${cs.borderRightWidth} ${cs.borderRightStyle} ${cs.borderRightColor}`,
+              bottom: `${cs.borderBottomWidth} ${cs.borderBottomStyle} ${cs.borderBottomColor}`,
+              left: `${cs.borderLeftWidth} ${cs.borderLeftStyle} ${cs.borderLeftColor}`,
+            };
+          };
+          const box = list.getBoundingClientRect();
+          const tiles = [...list.querySelectorAll<HTMLElement>('li.k-tile')];
+          const clipping: string[] = [];
+          for (let el = list.parentElement; el !== null; el = el.parentElement) {
+            const cs = getComputedStyle(el);
+            if (cs.overflowX !== 'visible') clipping.push(el.tagName);
+          }
+          return {
+            grid: edges(list),
+            tiles: tiles.map(edges),
+            left: box.left,
+            top: box.top,
+            height: box.height,
+            right: box.right,
+            columnLeft: column.getBoundingClientRect().left,
+            columnRight: column.getBoundingClientRect().right,
+            lastTileRight: Math.max(...tiles.map((t) => t.getBoundingClientRect().right)),
+            clipping,
+            viewportWidth: document.documentElement.clientWidth,
+          };
+        });
+
+        const line = geometry.grid.top; // the theme's line: 1px, solid, --k-line
+        expect(line).toMatch(/^1px solid rgb\(/);
+        expect(geometry.grid.left).toBe(line);
+        expect(geometry.tiles).toHaveLength(6);
+        for (const tile of geometry.tiles) {
+          expect(tile.right).toBe(line);
+          expect(tile.bottom).toBe(line);
+          // The grid's left line is the only one: a tile draws none (no double line).
+          expect(tile.left).toMatch(/^0px /);
+        }
+        // The left line sits at the same x as the findings list below and is inside the viewport.
+        expect(geometry.left).toBeGreaterThan(0);
+        expect(Math.abs(geometry.left - geometry.columnLeft)).toBeLessThan(0.5);
+        expect(Math.abs(geometry.right - geometry.columnRight)).toBeLessThan(0.5);
+        expect(Math.abs(geometry.lastTileRight - geometry.right)).toBeLessThan(1.5);
+        expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+        // Nothing clips it.
+        expect(geometry.clipping).toEqual([]);
+        // The pixels: the strip on the line is not the page background beside it.
+        const strip = (x: number): Promise<Buffer> =>
+          page.screenshot({ clip: { x, y: geometry.top + 8, width: 1, height: 8 } });
+        const onLine = await strip(geometry.left);
+        const beside = await strip(geometry.left - 4);
+        expect(onLine.equals(beside)).toBe(false);
+        await context.close();
+      });
+    }
+  }
+
+  test('severity tiles: the left line is drawn in forced colors', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: SIZES.desktop,
+      locale: 'de-DE',
+      timezoneId: 'Europe/Berlin',
+      forcedColors: 'active',
+    });
+    const page = await context.newPage();
+    await login(page);
+    const grid = page.getByRole('list', { name: 'Findings nach Schweregrad' });
+    await expect(grid).toHaveCSS('border-left-width', '1px');
+    const colours = await grid.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { left: cs.borderLeftColor, top: cs.borderTopColor };
+    });
+    expect(colours.left).toBe(colours.top);
+    await context.close();
   });
 });
 

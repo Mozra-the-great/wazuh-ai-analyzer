@@ -198,11 +198,24 @@ def test_a_request_that_outlives_the_grace_period_stays_analyzing(
     assert wait_for(lambda: statuses(config) == ["done"])  # not half-written either way
 
 
-def test_run_refuses_a_mode_that_is_not_implemented(
+def test_decision_mode_starts_with_the_decision_backend(tmp_path: Path) -> None:
+    service = Service(make_config(tmp_path, ANALYSIS_MODE="decision"))
+    try:
+        assert service.backend.name == "decision"
+    finally:
+        service.shutdown(grace=0.2)
+
+
+def test_a_broken_decision_definition_stops_the_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    broken = tmp_path / "v1.json"
+    broken.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("wazuh_ai_analyzer.analysis.decisions.DEFINITIONS_PATH", broken)
     monkeypatch.setattr(
-        os, "environ", {"DB_PATH": str(tmp_path / "d" / "a.db"), "ANALYSIS_MODE": "decision"}
+        os,
+        "environ",
+        {"DB_PATH": str(tmp_path / "d" / "a.db"), "ANALYSIS_MODE": "decision"},
     )
     assert cli.main(["run"]) == cli.EXIT_CONFIG
 

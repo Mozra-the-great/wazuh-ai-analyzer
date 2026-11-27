@@ -12,7 +12,7 @@
   const count = (level: Severity): string => (stats === null ? '–' : nf.format(stats.bySeverity[level]));
 </script>
 
-<TileGrid as="ul" min="9rem" aria-label={T.tiles.label}>
+<TileGrid as="ul" min="9rem" class="sev-tiles" aria-label={T.tiles.label}>
   <Tile as="li">
     <div class="tile" data-level="all">
       <span class="num">{stats === null ? '–' : nf.format(stats.totalFindings)}</span>

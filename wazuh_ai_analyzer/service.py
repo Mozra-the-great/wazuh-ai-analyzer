@@ -217,10 +217,11 @@ class Service:
             b.min_level,
         )
         log.info("History: %d alerts per batch | %gs pause", b.history_batch, b.history_pause)
+        model = c.analysis.decision_model if self.backend.name == "decision" else c.gemini.model
         log.info(
             "Analysis: mode %s, model %s, %d parallel request(s)",
             self.backend.name,
-            c.gemini.model,
+            model,
             c.gemini.concurrency,
         )
         if c.retention.days > 0:
