@@ -61,7 +61,7 @@ tests/               legacy tests, one module per topic; conftest.py isolates al
 tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface, exporter SQL),
                      rollback/ (legacy analyzer on a migrated DB), differential/ (legacy and
                      new code on the same input must give the same batches)
-.github/workflows/   tests (pytest 3.11/3.12, pytest (3.10) legacy, mypy, lint), ui (dashboard build +
+.github/workflows/   tests (pytest 3.11/3.12, mypy, lint), ui (dashboard build +
                      Playwright under the real CSP), release (tarball built twice + systemd sandbox test on the runner;
                      publishes on `v*` tags only), dependency-audit, workflow-lint, secret-scan, claude (@claude), claude-code-review
 ```
@@ -70,7 +70,7 @@ tests/v2/            tests of the rewrite: unit/, contract/ (frozen DB interface
 ```sh
 pip install --require-hashes -r requirements.txt -r requirements-test.txt
 python -m pytest -q                      # tests (no network, no real Gemini key)
-python -m pytest -q --ignore=tests/v2    # legacy tests only (what the 3.10 job runs)
+python -m pytest -q --ignore=tests/v2    # legacy tests only
 pip install --require-hashes -r requirements-lint.txt && ruff check . && mypy
 pip-audit --require-hashes --disable-pip -r requirements.txt
 (cd ui && npm ci && npm run lint && npm run check && npm test && npm run build)   # dashboard
@@ -83,20 +83,18 @@ Bump a dependency: change the pin in the `.in` file, then run the `pip-compile`
 command from its header with **Python 3.12** and keep the file header intact (Dependabot
 reads the Python version and the options from it). Compile on Linux: on Windows pip-compile
 adds `colorama`, which has to be removed by hand. `requirements-test.in` lists
-`exceptiongroup` and `tomli` explicitly because the 3.10 job needs them and pip-compile on
+`exceptiongroup` and `tomli` explicitly because the former 3.10 job needed them (they can go at the next recompile) and pip-compile on
 3.12 would drop them.
 
 ## Rules that are easy to break
 - **checksums.sha256** must match the three files it lists, in the same commit as any
   change to them: `sha256sum --text analyzer.py static/index.html requirements.txt > checksums.sha256`
   (use LF checkouts, see `.gitattributes`; the `lint` job fails otherwise).
-- Required check names (ruleset "Schütz mein Baum", active since 2026-10-21): `pytest (3.10)`,
+- Required check names (ruleset "Schütz mein Baum", active since 2026-10-21): `pytest (3.11)`,
   `pytest (3.12)`, `lint`, `CodeQL` (GitHub default setup), `workflow-lint`, `gitleaks`.
   Do not rename the jobs and do not add a `paths:` filter to workflows that provide them.
-  The rewrite needs 3.11, so `pytest (3.10)` is now the job `pytest-legacy` (legacy tests
-  only). When the maintainer has replaced the required check `pytest (3.10)` by
-  `pytest (3.11)` in the ruleset, delete that job. A new check becomes required only after
-  it has been green on `main`.
+  `pytest (3.10)` was replaced by `pytest (3.11)` on 2026-11-26 (Python 3.10 dropped).
+  A new check becomes required only after it has been green on `main`.
   `claude-review` is not required yet; add it once `CLAUDE_CODE_OAUTH_TOKEN` is set.
 - **The database schema is a public read interface** (the homelab exporter reads
   `batches`, `findings`, `sqlite_sequence` and the German `last_error` prefixes). Only
