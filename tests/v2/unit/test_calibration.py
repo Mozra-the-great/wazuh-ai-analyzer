@@ -663,11 +663,15 @@ def test_a_finding_that_mixes_states_with_other_rules_is_left_alone() -> None:
 
 # ── whole result ─────────────────────────────────────────────────────────────
 def test_overall_risk_follows_the_findings_but_never_rises() -> None:
-    alerts = [*PASSWD_PACKAGE, dpkg_alert("installed", "passwd"), ssh_alert(OTHER, 12)]
+    alerts = [
+        *PASSWD_PACKAGE,
+        dpkg_alert("installed", "passwd"),
+        alert_of("100500", "Web shell uploaded", agent=OTHER, level=12),
+    ]
     out = run(
         alerts,
         finding("critical", ["550"]),
-        finding("high", ["5763"], agents=(OTHER,)),
+        finding("high", ["100500"], agents=(OTHER,)),
         risk="critical",
     )
     assert [f.severity for f in out.findings] == ["medium", "high"]
@@ -862,3 +866,191 @@ def test_cut_off_facts_of_another_agent_block_the_package_explanation() -> None:
     # for host-a alone the explanation holds
     only_a = run(alerts, finding("critical", ["550"], agents=(AGENT,)))
     assert only_a.findings[0].severity == "medium"
+
+
+# ── #80: blocked lines, failed logins, merging ───────────────────────────────
+def alert_of(
+    rule: str, description: str, *, agent: str = AGENT, level: int = 5, src: str = "203.0.113.9"
+) -> dict[str, Any]:
+    return {
+        "rule": {"id": rule, "level": level, "description": description},
+        "agent": {"name": agent},
+        "location": "journald",
+        "timestamp": T0,
+        "full_log": description,
+        "data": {"srcip": src},
+    }
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "blocked 203.0.113.9 for 4h, scenario ssh-bf",
+        "Banned 203.0.113.9 (sshd)",
+        "Ban 203.0.113.9",
+        "Fail2Ban: Ban 203.0.113.9",
+        "Rate-limited 203.0.113.9",
+        "Dropped packets from 203.0.113.9",
+        "[crowdsec] blocked 203.0.113.9",
+    ],
+)
+def test_block_records_are_low(description: str) -> None:
+    alerts = [alert_of("100200", description)]
+    out = run(alerts, finding("high", ["100200"], title="Active brute-force attack"))
+    got = out.findings[0]
+    assert got.severity == "low"
+    assert "Sperre" in got.description
+    assert got.title == "Active brute-force attack"  # kept, not dropped
+    assert out.overall_risk == "low"
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "sshd: brute force trying to get access to the system",
+        "Banner grabbing detected",
+        "Dropbox client started",
+        "Unblocked 203.0.113.9",
+        "Multiple blocked connections to the database",
+    ],
+)
+def test_other_descriptions_are_no_block_records(description: str) -> None:
+    alerts = [alert_of("100201", description)]
+    assert run(alerts, finding("high", ["100201"])).findings[0].severity == "high"
+
+
+def test_a_finding_that_mixes_block_records_with_attacks_is_left_alone() -> None:
+    alerts = [alert_of("100200", "Banned 203.0.113.9"), alert_of("100300", "Web shell uploaded")]
+    assert run(alerts, finding("high", ["100200", "100300"])).findings[0].severity == "high"
+
+
+@pytest.mark.parametrize(
+    "alerts",
+    [
+        [alert_of("5710", "sshd: Attempt to login using a non-existent user")],
+        [alert_of("5763", "sshd: brute force trying to get access", level=10)],
+        [alert_of("100400", "Custom: Failed password for invalid user admin")],
+        [alert_of("5503", "PAM: User login failed.")],
+    ],
+)
+def test_failed_logins_alone_are_medium_at_most(alerts: list[dict[str, Any]]) -> None:
+    rule = alerts[0]["rule"]["id"]
+    out = run(alerts, finding("high", [rule]))
+    assert out.findings[0].severity == "medium"
+    assert "Hintergrundrauschen" in out.findings[0].description
+
+
+def test_a_successful_login_of_the_same_agent_switches_the_cap_off() -> None:
+    alerts = [
+        alert_of("5763", "sshd: brute force trying to get access", level=10),
+        alert_of("5715", "sshd: authentication success.", level=5),
+    ]
+    assert run(alerts, finding("high", ["5763"])).findings[0].severity == "high"
+
+
+def test_a_successful_login_of_another_agent_does_not() -> None:
+    alerts = [
+        alert_of("5763", "sshd: brute force trying to get access", level=10),
+        alert_of("5715", "sshd: authentication success.", agent=OTHER),
+    ]
+    assert run(alerts, finding("high", ["5763"])).findings[0].severity == "medium"
+
+
+def test_a_failed_login_finding_with_other_rules_is_left_alone() -> None:
+    alerts = [alert_of("5710", "sshd: non-existent user"), alert_of("100300", "Web shell uploaded")]
+    assert run(alerts, finding("high", ["5710", "100300"])).findings[0].severity == "high"
+
+
+def test_findings_of_the_same_agent_and_rules_are_merged() -> None:
+    alerts = [vuln_alert(f"CVE-2025-{n:04d}", "High", rule="23505") for n in range(35)]
+    findings = [
+        finding("high", ["23505"], title=f"Critical vulnerability CVE-2025-{n:04d}")
+        for n in range(35)
+    ]
+    findings[7] = finding("critical", ["23505"], title="Critical vulnerability CVE-2025-0007")
+    out = run(alerts, *findings)
+    assert len(out.findings) == 1
+    merged = out.findings[0]
+    assert merged.title == "Critical vulnerability CVE-2025-0000 (+34 weitere)"
+    # the cap of the alerts (High) applies before the merge, so the merged finding is high
+    assert merged.severity == "high"
+    assert "CVE-2025-0001" in merged.description
+    assert "CVE-2025-0034" in merged.description
+    assert merged.rule_ids == ("23505",)
+    assert "zusammengefasst" in out.summary
+
+
+def test_merge_keeps_the_most_severe_finding_as_lead_and_unique_recommendations() -> None:
+    a = NewFinding("a", "medium", "da", "step 1", ("h",), ("100",))
+    b = NewFinding("b", "high", "db", "step 2", ("h",), ("100",))
+    c = NewFinding("c", "low", "dc", "step 2", ("h",), ("100",))
+    merged = calibration.merge_findings([a, b, c])
+    assert len(merged) == 1
+    assert merged[0].title == "b (+2 weitere)"
+    assert merged[0].severity == "high"
+    assert merged[0].recommendation == "step 2\n\nstep 1"
+    assert "- a" in merged[0].description
+    assert "- c" in merged[0].description
+
+
+def test_merge_needs_the_same_agents_and_the_same_rules() -> None:
+    base = NewFinding("a", "high", "d", "r", ("h",), ("100",))
+    others = [
+        NewFinding("b", "high", "d", "r", ("h2",), ("100",)),
+        NewFinding("c", "high", "d", "r", ("h",), ("100", "101")),
+        NewFinding("d", "high", "d", "r", (), ("100",)),
+        NewFinding("e", "high", "d", "r", ("h",), ()),
+    ]
+    assert calibration.merge_findings([base, *others]) == [base, *others]
+
+
+def test_merge_orders_the_result_by_severity() -> None:
+    alerts = [
+        alert_of("100", "x", level=7),
+        alert_of("101", "y", level=7),
+    ]
+    out = run(
+        alerts,
+        finding("medium", ["100"], title="m1"),
+        finding("critical", ["101"], title="c"),
+        finding("high", ["100"], title="h"),
+    )
+    assert [f.title for f in out.findings] == ["c", "h (+1 weitere)"]
+
+
+def test_merged_decision_findings_record_the_count() -> None:
+    a = NewFinding("a", "high", "d", "r", ("h",), ("100",), 0.9, {"decision_version": "1"})
+    b = NewFinding("b", "high", "d", "r", ("h",), ("100",), 0.8, {"decision_version": "1"})
+    merged = calibration.merge_findings([a, b])
+    assert merged[0].decision == {"decision_version": "1", "merged": 2}
+
+
+def test_merged_texts_stay_within_their_caps() -> None:
+    many = [NewFinding("t" * 300, "high", "d" * 5000, "r", ("h",), ("100",)) for _ in range(60)]
+    merged = calibration.merge_findings(many)[0]
+    assert len(merged.title) <= 200
+    assert len(merged.description) <= 5000
+    assert "und 19 weitere" in merged.description
+
+
+def test_pipeline_merges_and_stores_one_finding(env: PipelineEnv) -> None:
+    findings = [
+        {
+            "title": f"SSH attack {n}",
+            "severity": "high",
+            "description": "d",
+            "recommendation": "r",
+            "affected_agents": [AGENT],
+            "rule_ids": ["5763"],
+        }
+        for n in range(3)
+    ]
+    env.install(gemini_ok({"summary": "s", "overall_risk": "high", "findings": findings}))
+    batch_id = env.new_batch(
+        alerts=[alert_of("5763", "sshd: brute force trying to get access", level=10)]
+    )
+    env.run(batch_id)
+    stored = env.findings(batch_id)
+    assert len(stored) == 1
+    assert stored[0]["severity"] == "medium"
+    assert stored[0]["title"] == "SSH attack 0 (+2 weitere)"

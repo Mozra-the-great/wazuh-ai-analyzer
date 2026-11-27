@@ -90,6 +90,29 @@ for the same agent, in the batch or in a batch of the last 24 hours: `info`. Oth
 the final state is unknown: at most `medium`, recommendation starts with
 `dpkg --audit`. A list of packages that was cut off never gives `info`.
 
+## Blocked lines and failed logins (#80)
+
+* **Records of a response.** An alert whose description starts with a block verb
+  (`blocked`, `ban`, `banned`, `drop`, `reject`, `deny`, `rate-limit`, `throttle`, with an
+  optional tool label such as `Fail2Ban:` or `[crowdsec]`) is the log line of a blocking
+  tool, not an event of the attack: `low`. The finding keeps its title and rules. In
+  decision mode this is what the `already_blocked` answer asks as well; the description
+  check also covers LLM mode and does not depend on the answer.
+* **Failed logins alone.** A finding whose rules are all failed-authentication rules
+  (sshd 5710/5711/5712/5716/5720/5758/5760/5763, PAM 5503/5551, syslog 2501/2502, 40111,
+  Windows 60122/60204, or a description that says so) is `medium` at most, unless the
+  batch holds a successful login of the same agent (sshd 5715, PAM 5501, Windows 60106,
+  or a description like "Accepted password"). Level 3 rules do not reach the analyzer with
+  the default `MIN_LEVEL=5`, so a success is only visible when the operator lowered it
+  or a composite rule fired.
+* **Merge per agent and rule.** Findings of one result with the same set of agents and
+  the same set of rule ids become one finding, rated like the most severe member (after
+  the checks above), with the others' titles listed in the description. 35 CVE findings
+  of one agent and rule are one finding.
+
+Not done on purpose: suppressing the repeat of a finding across batches (see issue #80);
+it trades fewer alerts for a continuing attack that is reported once.
+
 ## Prompt
 
 For batches with facts the LLM prompt gets the matching notes after the data block (so

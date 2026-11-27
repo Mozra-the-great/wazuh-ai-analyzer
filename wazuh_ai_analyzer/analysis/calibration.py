@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, cast
@@ -40,6 +41,7 @@ from ..ingest import facts as fx
 from ..ingest.sanitize import (
     SUMMARY_MAX,
     TEXT_MAX,
+    TITLE_MAX,
     AlertFact,
     AlertGroup,
     clean_text,
@@ -450,10 +452,99 @@ def check_file_integrity(scope: Scope, evidence: Evidence) -> list[Adjustment]:
     ]
 
 
+# ── #80: records of a response and failed logins alone ───────────────────────
+# The description of a log line of a blocking tool (fail2ban, CrowdSec, a firewall, a
+# rate limiter) starts with the verb: "blocked <ip> for 4h", "Ban <ip>". The optional label
+# in front is the tool or decoder name ("Fail2Ban: ...").
+_BLOCK_RECORD = re.compile(
+    r"^\W*(?:\[[\w .\-]{1,30}\]\s*|[\w .\-]{1,30}:\s*)?"
+    r"(?:block(?:ed|ing)?|ban(?:ned|ning)?|drop(?:ped)?|reject(?:ed)?|deny|denied"
+    r"|rate[- ]?limit(?:ed|ing)?|throttl(?:ed|ing))\b",
+    re.IGNORECASE,
+)
+# Wazuh rules for failed authentication (sshd, PAM, syslog, Windows).
+FAILED_LOGIN_RULES: Final = frozenset(
+    {"2501", "2502", "5503", "5551", "5710", "5711", "5712", "5716", "5720", "5758", "5760"}
+    | {"5763", "40111", "60122", "60204"}
+)
+_FAILED_LOGIN_TEXT = re.compile(
+    r"\b(?:authentication (?:failure|failed)|failed (?:password|login|logon)|login failed"
+    r"|logon failure|invalid user|illegal user|non-?existent user|missed the password)\b",
+    re.IGNORECASE,
+)
+LOGIN_SUCCESS_RULES: Final = frozenset({"5501", "5715", "60106"})
+_LOGIN_SUCCESS_TEXT = re.compile(
+    r"\b(?:accepted (?:password|publickey)|login success|logon success|successful login"
+    r"|session opened)\b",
+    re.IGNORECASE,
+)
+FAILED_LOGIN_CAP: Final[Severity] = "medium"
+BLOCK_RECORD_CAP: Final[Severity] = "low"
+
+
+def is_block_record(group: AlertGroup) -> bool:
+    """The alert is the log line of a blocking tool, not an event of the attack itself."""
+    return _BLOCK_RECORD.match(group["description"]) is not None
+
+
+def is_failed_login(group: AlertGroup) -> bool:
+    return group["rule_id"] in FAILED_LOGIN_RULES or bool(
+        _FAILED_LOGIN_TEXT.search(group["description"])
+    )
+
+
+def is_login_success(group: AlertGroup) -> bool:
+    return group["rule_id"] in LOGIN_SUCCESS_RULES or bool(
+        _LOGIN_SUCCESS_TEXT.search(group["description"])
+    )
+
+
+def check_block_record(scope: Scope, evidence: Evidence) -> list[Adjustment]:
+    """A "blocked <ip>" line says the source was stopped: low, not a successful attack."""
+    if not scope.groups or not all(is_block_record(g) for g in scope.groups):
+        return []
+    return [
+        Adjustment(
+            "block-record",
+            "Die Alerts sind Protokolleinträge einer Sperre (Ban, Block oder Rate-Limit): die"
+            " Quelle wurde bereits blockiert, ein erfolgreicher Angriff ist daraus nicht"
+            " abzulesen. Der Angriff selbst steht in den Findings zu den Alerts davor.",
+            cap=BLOCK_RECORD_CAP,
+        )
+    ]
+
+
+def check_failed_logins(scope: Scope, evidence: Evidence) -> list[Adjustment]:
+    """Failed logins alone are background noise at internet-facing hosts: medium at most.
+
+    The cap is off when a successful login of the same agent is in the batch (the
+    alerts then may describe a burst of failures that ended in access).
+    """
+    if not scope.groups or not all(
+        is_failed_login(g) and not is_block_record(g) for g in scope.groups
+    ):
+        return []
+    agents = set(scope.finding.affected_agents) or {a for g in scope.groups for a in g["agents"]}
+    for group in evidence.groups:
+        if is_login_success(group) and (not agents or agents & set(group["agents"])):
+            return []
+    return [
+        Adjustment(
+            "failed-logins",
+            "Fehlgeschlagene Anmeldungen allein sind Hintergrundrauschen an erreichbaren Hosts;"
+            " im Batch gibt es keine erfolgreiche Anmeldung desselben Agents, die auf einen"
+            " Einbruch hindeutet.",
+            cap=FAILED_LOGIN_CAP,
+        )
+    ]
+
+
 CHECKS: Final[tuple[Callable[[Scope, Evidence], list[Adjustment]], ...]] = (
     check_vulnerability,
     check_transient_package_state,
     check_file_integrity,
+    check_block_record,
+    check_failed_logins,
 )
 
 
@@ -498,6 +589,57 @@ def apply_adjustments(finding: NewFinding, adjustments: Sequence[Adjustment]) ->
     )
 
 
+# ── #80: one finding per agent and rule set ──────────────────────────────────
+MERGED_LIST_MAX: Final = 40
+MERGED_TITLE_MAX: Final = 100
+
+
+def merge_findings(findings: Sequence[NewFinding]) -> list[NewFinding]:
+    """Findings of the same agents and the same rules become one, rated like the most severe.
+
+    A burst of 35 CVE alerts for one agent is one situation, not 35. The merged finding
+    keeps the most severe member's text and lists the titles of the others in the
+    description. Findings without rule ids or agents are never merged (the key would
+    say nothing).
+    """
+    keyed: dict[tuple[frozenset[str], frozenset[str]], list[int]] = {}
+    for index, finding in enumerate(findings):
+        if finding.rule_ids and finding.affected_agents:
+            key = (frozenset(finding.rule_ids), frozenset(finding.affected_agents))
+            keyed.setdefault(key, []).append(index)
+    merged_into: dict[int, NewFinding] = {}
+    absorbed: set[int] = set()
+    for indexes in keyed.values():
+        if len(indexes) < 2:
+            continue
+        members = sorted((findings[i] for i in indexes), key=lambda f: rank(f.severity))
+        lead, rest = members[0], members[1:]  # the sort is stable: equal ones keep their order
+        others = [clean_text(f.title, MERGED_TITLE_MAX) for f in rest]
+        listed = others[:MERGED_LIST_MAX]
+        more = len(others) - len(listed)
+        lines = [f"- {title}" for title in listed]
+        if more:
+            lines.append(f"- ... und {more} weitere")
+        note = (
+            f"\n\nZusammengefasst: {len(members)} Findings mit gleichem Agent und gleichen"
+            " Regeln, hier mit dem Titel des schwersten:\n" + "\n".join(lines)
+        )
+        suffix = f" (+{len(rest)} weitere)"
+        recommendations = list(dict.fromkeys(f.recommendation for f in members if f.recommendation))
+        decision = lead.decision
+        if decision is not None:
+            decision = {**decision, "merged": len(members)}
+        merged_into[indexes[0]] = replace(
+            lead,
+            title=clean_text(lead.title, TITLE_MAX - len(suffix)) + suffix,
+            description=clean_text(lead.description, TEXT_MAX - len(note), multiline=True) + note,
+            recommendation=clean_text("\n\n".join(recommendations), TEXT_MAX, multiline=True),
+            decision=decision,
+        )
+        absorbed.update(indexes[1:])
+    return [merged_into.get(i, f) for i, f in enumerate(findings) if i not in absorbed]
+
+
 def _highest(findings: Sequence[NewFinding]) -> Severity | None:
     return min((f.severity for f in findings), key=rank, default=None)
 
@@ -524,13 +666,13 @@ def calibrate(
     """
     evidence = Evidence(groups, history, batch_id)
     findings: list[NewFinding] = []
-    changed = 0
+    touched = False
     for finding in result.findings:
         scope = _scope(finding, groups)
         adjustments = [a for check in CHECKS for a in check(scope, evidence)]
         updated = apply_adjustments(finding, adjustments)
         if updated is not finding:
-            changed += 1
+            touched = True
             log.info(
                 "Calibration: %r %s -> %s (%s)",
                 finding.title,
@@ -539,22 +681,38 @@ def calibrate(
                 ", ".join(a.tag for a in adjustments),
             )
         findings.append(updated)
-    if not changed:
-        return result
     lowered_count = sum(
         1 for a, b in zip(result.findings, findings, strict=True) if a.severity != b.severity
     )
-    summary = result.summary
-    if lowered_count:
-        note = (
-            f" {lowered_count} Finding(s) wurden automatisch herabgestuft; der Grund steht"
-            " jeweils in der Beschreibung."
+    merged = merge_findings(findings)
+    merged_count = len(findings) - len(merged)
+    if merged_count:
+        log.info(
+            "Calibration: %d findings merged into others of the same agent and rules", merged_count
         )
+        # Most severe first, as the prompt asks of the model; equal ones keep their order.
+        merged.sort(key=lambda f: rank(f.severity))
+    if not touched and not merged_count:
+        return result
+    notes: list[str] = []
+    if lowered_count:
+        notes.append(
+            f"{lowered_count} Finding(s) wurden automatisch herabgestuft; der Grund steht jeweils"
+            " in der Beschreibung."
+        )
+    if merged_count:
+        notes.append(
+            f"{merged_count} Finding(s) mit gleichem Agent und gleichen Regeln wurden"
+            " zusammengefasst."
+        )
+    summary = result.summary
+    if notes:
+        note = " " + " ".join(notes)
         summary = clean_text(summary, SUMMARY_MAX - len(note), multiline=True) + note
     return replace(
         result,
         summary=summary,
-        overall_risk=_overall(result, findings) if lowered_count else result.overall_risk,
-        findings=tuple(findings),
+        overall_risk=_overall(result, merged) if lowered_count else result.overall_risk,
+        findings=tuple(merged),
         calibrated=lowered_count,
     )
