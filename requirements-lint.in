@@ -5,7 +5,7 @@
 # Regenerate (also to bump a version) with Python 3.12:
 #   pip install pip-tools
 #   pip-compile --generate-hashes --strip-extras --output-file=requirements-lint.txt requirements-lint.in
-ruff==0.17.5
+ruff==0.17.6
 mypy==2.4.1
 types-requests==2.33.0.20261030
 pip-audit==2.10.1
