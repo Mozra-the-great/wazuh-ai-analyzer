@@ -283,10 +283,11 @@ test.describe('the dashboard', () => {
 });
 
 test.describe('the ruled sheets are closed on all four sides (#112)', () => {
-  // kern's TileGrid draws the top line and each Tile its right and bottom line, so the left line
-  // is the app's. The test pins the rendered geometry, not the CSS text: width and colour of every
-  // edge, the line is not covered by a tile or clipped by an ancestor, and a pixel strip on the line
-  // differs from the page background next to it (so no tile paints over it).
+  // kern's TileGrid draws its left and top line and each Tile its right and bottom line (kern 0.14,
+  // kern#172). The test pins the rendered geometry, not the CSS text: width and colour of every
+  // edge, no second left line on a tile, the line is not covered by a tile or clipped by an
+  // ancestor, and a pixel strip on the line differs from the page background next to it (so no tile
+  // paints over it).
   const SIZES = {
     desktop: { width: 1280, height: 900 },
     mobile: { width: 360, height: 780 },
@@ -346,6 +347,8 @@ test.describe('the ruled sheets are closed on all four sides (#112)', () => {
         for (const tile of geometry.tiles) {
           expect(tile.right).toBe(line);
           expect(tile.bottom).toBe(line);
+          // The grid's left line is the only one: a tile draws none (no double line).
+          expect(tile.left).toMatch(/^0px /);
         }
         // The left line sits at the same x as the findings list below and is inside the viewport.
         expect(geometry.left).toBeGreaterThan(0);
@@ -365,6 +368,25 @@ test.describe('the ruled sheets are closed on all four sides (#112)', () => {
       });
     }
   }
+
+  test('severity tiles: the left line is drawn in forced colors', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: SIZES.desktop,
+      locale: 'de-DE',
+      timezoneId: 'Europe/Berlin',
+      forcedColors: 'active',
+    });
+    const page = await context.newPage();
+    await login(page);
+    const grid = page.getByRole('list', { name: 'Findings nach Schweregrad' });
+    await expect(grid).toHaveCSS('border-left-width', '1px');
+    const colours = await grid.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { left: cs.borderLeftColor, top: cs.borderTopColor };
+    });
+    expect(colours.left).toBe(colours.top);
+    await context.close();
+  });
 });
 
 test.describe('empty database', () => {

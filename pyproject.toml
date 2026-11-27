@@ -8,7 +8,7 @@
 
 [project]
 name = "wazuh-ai-analyzer"
-version = "2.0.1"
+version = "2.1.0"
 description = "Analyses Wazuh alerts with Gemini and serves the findings in a dashboard"
 requires-python = ">=3.11"
 

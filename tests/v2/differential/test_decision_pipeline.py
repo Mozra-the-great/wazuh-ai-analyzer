@@ -17,15 +17,22 @@ import pytest
 from v2.contract.exporter_sql import collect
 from v2.decision_support import blocked, decision_ok
 from v2.helpers import FakeClock
-from v2.pipeline_support import ALERT, FakeGemini, FakeResponse, PipelineEnv, make_env
+from v2.pipeline_support import ALERT as LOGIN_ALERT
+from v2.pipeline_support import FakeGemini, FakeResponse, PipelineEnv, make_env
 from wazuh_ai_analyzer.analysis.decision import GeminiDecisionBackend
 from wazuh_ai_analyzer.analysis.decisions import load_definitions
 from wazuh_ai_analyzer.ingest.batches import BatchWriter
 from wazuh_ai_analyzer.metrics.runtime import runtime_counters
 from wazuh_ai_analyzer.storage import contract
 
+# Custom rules, not sshd ones: the severity calibration caps failed logins at medium (#80),
+# and these tests are about the stored severities of the decision mode.
+ALERT: dict[str, Any] = {
+    **LOGIN_ALERT,
+    "rule": {"id": "100210", "level": 5, "description": "custom: unexpected process"},
+}
 SECOND_RULE: dict[str, Any] = {
-    "rule": {"id": "5712", "level": 12, "description": "sshd: brute force trying to get access"},
+    "rule": {"id": "100212", "level": 12, "description": "custom: unexpected listener"},
     "agent": {"name": "ct101"},
     "location": "journald",
     "timestamp": "2026-10-07T10:01:00.000+0000",
@@ -63,7 +70,7 @@ def test_a_decision_batch_ends_done_with_contract_valid_rows(env: PipelineEnv) -
         decision_ok(severity="medium", relevant=0.8),
         decision_ok(severity="high", relevant=0.9, confidence=0.77),
     )
-    batch_id = store(env)  # groups come sorted by level: 5712 (12) first, then 5710 (5)
+    batch_id = store(env)  # groups come sorted by level: 100212 (12) first, then 100210 (5)
     env.run(batch_id)
 
     row = env.row(batch_id)

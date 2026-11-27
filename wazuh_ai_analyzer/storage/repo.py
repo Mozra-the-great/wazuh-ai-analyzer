@@ -253,6 +253,23 @@ class Repository:
                 ids.append(cur.lastrowid)
         return ids
 
+    # ── history for the analysis ─────────────────────────────────────────────
+    def recent_fact_batches(self, *, exclude_batch: int, hours: float, limit: int) -> list[str]:
+        """`raw_groups` of the newest batches of the last `hours` whose groups carry facts.
+
+        The severity calibration looks here for package activity that happened before
+        the batch at hand (#118-#120). The LIKE only skips batches without any fact; the
+        caller parses and re-sanitises the documents.
+        """
+        since = iso_utc(self._clock() - hours * 3600.0)
+        with self._db.reader() as conn:
+            rows = conn.execute(
+                "SELECT raw_groups FROM batches WHERE id != ? AND created_at >= ?"
+                " AND raw_groups LIKE '%\"facts\"%' ORDER BY id DESC LIMIT ?",
+                (exclude_batch, since, limit),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     # ── decision scratch space (#88) ─────────────────────────────────────────
     def load_decision_partial(self, batch_id: int) -> str | None:
         """The answers a decision-mode batch already has (a JSON document), if any."""
