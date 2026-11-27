@@ -67,6 +67,8 @@ class AnalysisResult:
     suspicious_downgrades: int = 0
     # Groups the provider refused to look at (safety block), stored as placeholder findings.
     safety_blocked: int = 0
+    # Findings whose severity `calibration` lowered after the backend had rated them.
+    calibrated: int = 0
 
 
 class PartialStore(Protocol):
