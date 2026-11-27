@@ -841,3 +841,24 @@ def test_cut_off_vulnerability_groups_fall_back_to_the_rule() -> None:
     alerts = [vuln_alert(f"CVE-2024-{n:04d}", "Medium", rule="23504") for n in range(80)]
     out = run(alerts, finding("critical", ["23504"]))
     assert out.findings[0].severity == "medium"
+
+
+def test_a_group_without_vulnerability_facts_blocks_the_solved_and_fresh_package_caps() -> None:
+    solved = vuln_alert("CVE-2024-1", "Medium", rule="23504", status="Solved")
+    unknown = vuln_alert("CVE-2025-2", "Critical", rule="23506")
+    unknown["location"] = "elsewhere"  # no fact for the critical group
+    out = run([solved, unknown], finding("critical", ["23504", "23506"]))
+    assert out.findings[0].severity == "critical"  # not info, the critical rule speaks
+
+
+def test_cut_off_facts_of_another_agent_block_the_package_explanation() -> None:
+    alerts = [fim_alert(f"/usr/lib/pkg/lib{n}.so", agent=AGENT) for n in range(80)]
+    alerts += [fim_alert(f"/usr/bin/tool{n}", agent=OTHER) for n in range(20)]
+    alerts.append(dpkg_alert("installed", "pkg", agent=AGENT))
+    group = next(g for g in group_alerts(alerts) if g["rule_id"] == "550")
+    assert {f["agent"] for f in group["facts"]} == {AGENT}  # host-b is cut off
+    out = run(alerts, finding("critical", ["550"], agents=(AGENT, OTHER)))
+    assert out.findings[0].severity == "critical"
+    # for host-a alone the explanation holds
+    only_a = run(alerts, finding("critical", ["550"], agents=(AGENT,)))
+    assert only_a.findings[0].severity == "medium"

@@ -258,7 +258,11 @@ def check_vulnerability(scope: Scope, evidence: Evidence) -> list[Adjustment]:
         return []
     facts = scope.facts(fx.FACT_VULN)
     active = [f for f in facts if f.get("status", "").lower() != fx.VULN_STATUS_SOLVED]
-    complete = bool(facts) and not scope.truncated
+    complete = (
+        bool(facts)
+        and not scope.truncated
+        and all(any(f["k"] == fx.FACT_VULN for f in g.get("facts", [])) for g in scope.groups)
+    )
     adjustments: list[Adjustment] = []
 
     if complete and not active:
@@ -395,7 +399,14 @@ def check_file_integrity(scope: Scope, evidence: Evidence) -> list[Adjustment]:
     if not facts or any("ind" in f for f in facts):
         return []
     agents = {f.get("agent", "") for f in facts}
+    if scope.truncated:
+        # The facts that were cut off may belong to other agents of the finding.
+        agents |= set(scope.finding.affected_agents) or {
+            a for g in scope.groups for a in g["agents"]
+        }
     if _other_high_alerts(evidence, scope, agents):
+        return []
+    if scope.truncated and not all(evidence.has_package_activity(a) for a in agents):
         return []
     anchor = one_step_above(severity_for_level(max(g["max_level"] for g in scope.groups)))
     caps: list[Severity] = []
