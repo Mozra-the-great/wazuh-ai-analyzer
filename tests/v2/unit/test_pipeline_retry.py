@@ -16,7 +16,7 @@ import pytest
 import requests
 
 from v2.helpers import FakeClock
-from v2.pipeline_support import KEY, FakeResponse, PipelineEnv, gemini_ok, make_env
+from v2.pipeline_support import ALERT, KEY, FakeResponse, PipelineEnv, gemini_ok, make_env
 from wazuh_ai_analyzer.analysis.backend import AnalysisResult, BackendFailure, BatchContext
 from wazuh_ai_analyzer.ingest.sanitize import AlertGroup
 from wazuh_ai_analyzer.pipeline import PERMANENT_STREAK_LIMIT
@@ -243,7 +243,8 @@ def test_unexpected_exception_does_not_strand_the_batch(env: PipelineEnv) -> Non
 def test_a_failing_database_write_leaves_no_half_written_batch(env: PipelineEnv) -> None:
     """A crash while the findings are written rolls the whole result back."""
     env.install(gemini_ok({**_two_findings(), "summary": "s"}))
-    batch_id = env.new_batch()
+    second = {**ALERT, "rule": {"id": "5712", "level": 5, "description": "other rule"}}
+    batch_id = env.new_batch(alerts=[ALERT, second])
     original = env.repo.complete_batch
     calls: list[int] = []
 
@@ -272,7 +273,10 @@ def _two_findings() -> dict[str, object]:
         "affected_agents": ["ct100"],
         "rule_ids": ["5710"],
     }
-    return {"overall_risk": "high", "findings": [f, {**f, "title": "u"}]}
+    return {
+        "overall_risk": "high",
+        "findings": [f, {**f, "title": "u", "rule_ids": ["5712"]}],
+    }
 
 
 # ── persistence across restarts ───────────────────────────────────────────────
