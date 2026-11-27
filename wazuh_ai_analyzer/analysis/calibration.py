@@ -16,8 +16,12 @@ severity:
   path no package installs to, changed owner/permissions, a changed hash without a
   changed size or mtime, other high-level alerts of the same agent, a change in a
   system directory without any package activity) switches the downgrade off.
-* Missing data switches it off as well. A group without facts, or with facts that
-  were cut off, is never downgraded on the strength of what is missing.
+* Missing data switches it off as well. A group without facts is never downgraded. When
+  a group has more facts than fit, the ones that speak against a downgrade (file
+  changes with an indicator, the most severe CVEs, unfinished package states) are kept
+  first (`sanitize`); checks that would otherwise rely on the missing ones (the CVE
+  severity, the end of a package list, "no package activity") treat a cut-off group as
+  unknown and leave the rating alone.
 
 The module works on the result of any backend, so the LLM and the decision mode get
 the same treatment. It never raises for odd input; the pipeline additionally keeps the
@@ -400,7 +404,11 @@ def check_file_integrity(scope: Scope, evidence: Evidence) -> list[Adjustment]:
         if evidence.has_package_activity(fact.get("agent", "")):
             caps.append("medium")
             explained = True
-        elif fact.get("mode", "") == "scheduled" and not fx.is_system_binary_path(fact["path"]):
+        elif (
+            fact.get("mode", "") == "scheduled"
+            and not scope.truncated  # a cut-off fact may be a system binary
+            and not fx.is_system_binary_path(fact["path"])
+        ):
             caps.append(anchor)
         else:
             # A change in a system directory without any package activity stays as rated.

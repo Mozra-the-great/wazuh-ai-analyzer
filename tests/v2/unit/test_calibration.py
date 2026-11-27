@@ -789,3 +789,55 @@ def test_recent_fact_batches_filters_by_window_facts_and_batch(env: PipelineEnv)
 def test_group_type_round_trips_through_json() -> None:
     groups: list[AlertGroup] = group_alerts([dpkg_alert("installed")])
     assert [sanitize_group(g) for g in json.loads(json.dumps(groups))] == groups
+
+
+# ── cut-off facts ────────────────────────────────────────────────────────────
+def test_an_indicator_after_hundreds_of_ordinary_facts_is_not_lost() -> None:
+    alerts = [fim_alert(f"/usr/lib/pkg/file{n}.so") for n in range(700)]
+    alerts.append(fim_alert("/root/.ssh/authorized_keys", changed=("size", "mtime", "md5")))
+    group = group_alerts(alerts)[0]
+    assert group["facts"][0].get("ind") == "sensitive-path"
+    assert group["facts_more"] > 0
+    alerts.append(dpkg_alert("installed", "passwd"))
+    out = run(alerts, finding("critical", ["550"]))
+    assert out.findings[0].severity == "critical"
+
+
+def test_a_critical_cve_after_hundreds_of_low_ones_is_not_lost() -> None:
+    alerts = [vuln_alert(f"CVE-2024-{n:04d}", "Low", rule="23503") for n in range(700)]
+    alerts.append(vuln_alert("CVE-2025-9999", "Critical", rule="23503"))
+    group = group_alerts(alerts)[0]
+    assert group["facts"][0]["sev"] == "critical"
+
+
+def test_many_indicators_keep_the_first_ones() -> None:
+    alerts = [fim_alert(f"/tmp/file{n}") for n in range(800)]
+    group = group_alerts(alerts)[0]
+    assert len(group["facts"]) == FACTS_MAX
+    assert all(f.get("ind") == "outside-package-paths" for f in group["facts"])
+    assert group["facts_more"] == 800 - FACTS_MAX
+
+
+def test_cut_off_file_changes_without_package_activity_stay_as_rated() -> None:
+    # 60 ordinary facts fill the group; the system binary beyond the cap is not visible
+    alerts = [
+        fim_alert(f"/etc/default/app{n}", changed=("size", "mtime", "md5")) for n in range(80)
+    ]
+    alerts.append(fim_alert("/usr/sbin/sshd", changed=("size", "mtime", "md5")))
+    group = group_alerts(alerts)[0]
+    assert group["facts_more"] > 0
+    out = run(alerts, finding("critical", ["550"]))
+    assert out.findings[0].severity == "critical"
+
+
+def test_cut_off_file_changes_with_package_activity_are_still_explained() -> None:
+    alerts = [fim_alert(f"/usr/lib/pkg/lib{n}.so") for n in range(80)]
+    alerts.append(dpkg_alert("installed", "pkg"))
+    out = run(alerts, finding("critical", ["550"]))
+    assert out.findings[0].severity == "medium"
+
+
+def test_cut_off_vulnerability_groups_fall_back_to_the_rule() -> None:
+    alerts = [vuln_alert(f"CVE-2024-{n:04d}", "Medium", rule="23504") for n in range(80)]
+    out = run(alerts, finding("critical", ["23504"]))
+    assert out.findings[0].severity == "medium"

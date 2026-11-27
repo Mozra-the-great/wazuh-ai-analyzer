@@ -369,6 +369,7 @@ class _GroupBuilder:
         "description",
         "facts",
         "facts_lost",
+        "facts_stored",
         "levels",
         "locations",
         "samples",
@@ -381,21 +382,32 @@ class _GroupBuilder:
         self.levels: list[int] = []
         self.locations: set[str] = set()
         self.samples: list[AlertSample] = []
-        self.facts: dict[tuple[tuple[str, object], ...], AlertFact] = {}
-        self.facts_lost = 0  # distinct facts that did not fit into FACTS_COLLECT_MAX
+        # Facts by priority (`_fact_priority`): when the builder is full, a more important
+        # fact pushes out a less important one, so an indicator can never be lost to
+        # ordinary facts that came first.
+        self.facts: dict[int, dict[tuple[tuple[str, object], ...], AlertFact]] = {}
+        self.facts_stored = 0
+        self.facts_lost = 0  # distinct facts that were pushed out or did not fit
 
     def add_fact(self, fact: AlertFact) -> None:
         key = tuple(sorted(fact.items()))
-        if key in self.facts:
+        priority = _fact_priority(fact)
+        bucket = self.facts.setdefault(priority, {})
+        if key in bucket:
             return
-        if len(self.facts) >= FACTS_COLLECT_MAX:
+        if self.facts_stored >= FACTS_COLLECT_MAX:
+            worst = max((p for p, b in self.facts.items() if b), default=priority)
             self.facts_lost += 1
-        else:
-            self.facts[key] = fact
+            if priority >= worst:
+                return
+            self.facts[worst].popitem()  # the newest one of the least important kind
+            self.facts_stored -= 1
+        bucket[key] = fact
+        self.facts_stored += 1
 
     def kept_facts(self) -> tuple[list[AlertFact], int]:
         """At most FACTS_MAX facts, the ones that matter most first, and how many are missing."""
-        ordered = sorted(self.facts.values(), key=_fact_priority)  # stable: first seen first
+        ordered = [f for p in sorted(self.facts) for f in self.facts[p].values()]
         return ordered[:FACTS_MAX], max(len(ordered) - FACTS_MAX, 0) + self.facts_lost
 
 

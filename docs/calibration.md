@@ -15,7 +15,8 @@ Rules that hold for every check:
   the recommendation, and in decision mode the change is recorded in
   `findings.decision["calibration"]` (`rule`, `from`, `to`).
 * Evidence of tampering switches a check off. Missing data does as well: a group
-  without facts, or with facts that were cut off, is never downgraded.
+  without facts is never downgraded, and a group whose facts were cut off counts as
+  unknown wherever the cut-off part could matter (see "Facts").
 * A failing check never fails the batch; the pipeline keeps the backend's result and
   logs the error. Every change is logged at INFO (`Calibration: ... (tag)`).
 * After a downgrade `overall_risk` may not stay above the most severe finding left, and
@@ -36,8 +37,13 @@ the facts are stored in `batches.raw_groups` and read back through `sanitize_gro
 
 The dpkg and vulnerability facts are only built from the log source that really writes
 them: the same words in any other log are attacker-writable and give no fact.
-When a group has more facts than the cap, the ones that matter for a downgrade are kept
-first (file changes with an indicator, the most severe CVEs, unfinished package states).
+When a group has more facts than the cap, the ones that speak against a downgrade are
+kept first, also while the alerts are being grouped: file changes with an indicator, the
+most severe CVEs, unfinished package states. An indicator or a critical CVE can
+therefore never be pushed out by ordinary facts that came earlier. `facts_more` counts
+what was left out, and a group with `facts_more` is treated as incomplete where the
+missing part matters: no CVE severity from the facts (the rule decides), no `info` for a
+package list, no "no package activity" cap for file changes.
 
 ## File integrity (#118)
 
